@@ -18,6 +18,7 @@ const SEARCH_MAX_ROUNDS = 2;
 const FILE_MAX_BYTES = 10 * 1024 * 1024;
 const FILE_MAX_TEXT = 100 * 1024;
 
+const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'];
 const TEXT_EXTS = ['.txt', '.md', '.markdown', '.json', '.jsonl', '.csv', '.tsv',
   '.log', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf',
   '.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.c', '.cpp', '.h',
@@ -306,6 +307,35 @@ function historyForApi(sid) {
   }));
 }
 
+async function autoTitle(sid, apiUrl, apiKey, model, userText, answerText) {
+  try {
+    const s = STATE.sessions[sid];
+    if (!s || s.title_auto) return;
+    const body = {
+      model, stream: false, max_tokens: 24,
+      messages: [
+        { role: 'system', content: '用不超过10个汉字概括这段对话的主题，只输出标题本身，不要引号、不要句号、不要前缀。' },
+        { role: 'user', content: '用户：' + String(userText || '').slice(0, 120) + '\n助手：' + String(answerText || '').slice(0, 160) }
+      ]
+    };
+    const res = await fetch(apiUrl + '/chat/completions', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, apiKey ? { Authorization: 'Bearer ' + apiKey } : {}),
+      body: JSON.stringify(body), mode: 'cors', credentials: 'omit'
+    });
+    if (!res.ok) return;
+    const d = await res.json();
+    let t = ((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '').trim();
+    t = t.replace(/[「」"'“”《》]/g, '').replace(/^标题[:：]/, '').trim().split('\n')[0].slice(0, 20);
+    if (!t) return;
+    const s2 = STATE.sessions[sid];
+    if (!s2) return;
+    s2.title = t;
+    s2.title_auto = true;
+    await saveState();
+  } catch (e) { /* 标题失败不影响主流程 */ }
+}
+
 function addMessage(sid, msg) {
   let s = STATE.sessions[sid];
   if (!s) {
@@ -372,11 +402,14 @@ function filePublic(f) {
     audit_result: 'pass',
     inserted_at: f.inserted_at, updated_at: f.updated_at,
     token_usage: f.token_usage || 0, error_code: f.error_code || null,
-    from_share: false, is_image: false, signed_path: null
+    from_share: false, is_image: !!f.is_image,
+    // 必须是绝对地址：壳子看到相对路径会自己拼 CDN 域名（deepseek 的），
+    // 结果是图打不开、直接提示 URL 连不了。
+    signed_path: f.is_image ? (self.location.origin + '/local/file/' + f.id) : null
   };
 }
 
-function addFile(name, bytes, text) {
+function addFile(name, bytes, text, dataUrl) {
   const id = 'file-' + STATE.next_file_id;
   STATE.next_file_id += 1;
   const now = Date.now();
@@ -384,10 +417,17 @@ function addFile(name, bytes, text) {
   const ext = extMatch ? '.' + extMatch[1].toLowerCase() : '';
   const f = {
     id, file_name: name, file_size: bytes, inserted_at: now, updated_at: now,
-    token_usage: 0, error_code: null, text: ''
+    token_usage: 0, error_code: null, text: '', is_image: false
   };
   if (bytes > FILE_MAX_BYTES) { f.status = 'FAILED'; f.error_code = 'FILE_TOO_LARGE'; }
   else if (bytes === 0) { f.status = 'CONTENT_EMPTY'; }
+  else if (IMAGE_EXTS.indexOf(ext) >= 0 && dataUrl) {
+    // 图片：原样存 dataURL，发消息时作为 image_url 片段交给多模态模型
+    f.status = 'SUCCESS';
+    f.is_image = true;
+    f.dataUrl = dataUrl;
+    f.mime = (dataUrl.match(/^data:([^;]+)/) || [])[1] || 'image/png';
+  }
   else if (TEXT_EXTS.indexOf(ext) < 0) { f.status = 'FAILED'; f.error_code = 'UNSUPPORTED_TYPE'; }
   else {
     let t = text || '';
@@ -406,16 +446,21 @@ function addFile(name, bytes, text) {
   return filePublic(f);
 }
 
-function textsForPrompt(ids) {
-  const blocks = [];
-  const missing = [];
+function contentForPrompt(prompt, ids) {
+  const texts = [];
+  const images = [];
   for (const id of ids) {
     const f = STATE.files[id];
-    if (!f || f.status !== 'SUCCESS' || !f.text) { missing.push(id); continue; }
-    const tail = f.truncated ? '\n（内容过长，已截断）' : '';
-    blocks.push('[附件文件《' + f.file_name + '》内容如下：\n' + f.text + tail + '\n——文件内容结束]');
+    if (!f) continue;
+    if (f.is_image && f.dataUrl) { images.push({ type: 'image_url', image_url: { url: f.dataUrl } }); continue; }
+    if (f.status === 'SUCCESS' && f.text) {
+      const tail = f.truncated ? '\n（内容过长，已截断）' : '';
+      texts.push('[附件文件《' + f.file_name + '》内容如下：\n' + f.text + tail + '\n——文件内容结束]');
+    }
   }
-  return { blocks, missing };
+  const text = texts.length ? (texts.join('\n\n') + '\n\n' + prompt) : prompt;
+  if (!images.length) return text;
+  return [{ type: 'text', text }].concat(images);
 }
 
 /* ------------------------------------------------------------------ 网页搜索 */
@@ -508,7 +553,15 @@ async function wikiSearch(q, limit, lang) {
 const SEARCH_CACHE = new Map();
 const SEARCH_TTL = 600000;
 
-async function webSearch(q, limit) {
+async function relaySearch(base, q, limit) {
+  const r = await fetchText(base + '/search?q=' + encodeURIComponent(q), 8000);
+  if (r.status >= 400) throw new Error('relay ' + r.status);
+  const d = JSON.parse(r.text);
+  const arr = (d && d.results) || [];
+  return arr.slice(0, limit).map((x) => ({ title: x.title || '', url: x.url || '', snippet: x.snippet || '' }));
+}
+
+async function webSearch(q, limit, searchBase) {
   const query = String(q || '').trim();
   if (!query) return [];
   const hit = SEARCH_CACHE.get(query);
@@ -516,13 +569,16 @@ async function webSearch(q, limit) {
   const limitN = limit || 5;
   // 多个源并发跑（跨域被拦的源会立刻 reject，不拖时间），
   // 谁先有结果用谁；全部失败才返回空，交给模型如实说没搜到。
-  const sources = [
+  const sources = [];
+  // 中转优先：Cloudflare Worker 有自己的出口，Bing RSS / DDG 都能抓到
+  if (searchBase) sources.push(() => relaySearch(searchBase, query, limitN));
+  sources.push(
     () => ddgHtmlSearch(query, limitN),
     () => ddgLiteSearch(query, limitN),
     () => ddgIaSearch(query, limitN),
     () => wikiSearch(query, limitN, 'zh'),
     () => wikiSearch(query, limitN, 'en')
-  ];
+  );
   const settled = await Promise.all(sources.map((fn) => fn().then((r) => r || []).catch(() => [])));
   let results = [];
   for (const r of settled) {
@@ -681,6 +737,12 @@ async function chatRun(scene, req, body, emit) {
   }
   const cfg = resolveConfig(req.headers);
   const apiUrl = cfg.url, apiKey = cfg.key, model = cfg.model;
+  // 搜索走同一个中转域名（worker 的 /search）；直连上游时为空，退回维基/DDG
+  let searchBase = '';
+  try {
+    const u = new URL(apiUrl);
+    if (u.host !== 'api.agnes-ai.cn') searchBase = u.origin;
+  } catch (e) { searchBase = ''; }
 
   let reqMsgId = newMsgId();
   const respMsgId = newMsgId();
@@ -850,11 +912,7 @@ async function chatRun(scene, req, body, emit) {
     }
     let apiContent = prompt;
     const refIds = body.ref_file_ids || [];
-    if (refIds.length) {
-      const { blocks, missing } = textsForPrompt(refIds);
-      if (blocks.length) apiContent = blocks.join('\n\n') + '\n\n' + prompt;
-      if (missing.length) { /* 静默 */ }
-    }
+    if (refIds.length) apiContent = contentForPrompt(prompt, refIds);
     addMessage(sid, {
       id: reqMsgId, parent_id: parentId, role: 'USER', content: prompt,
       api_content: apiContent, thinking_enabled: showThink,
@@ -983,7 +1041,7 @@ async function chatRun(scene, req, body, emit) {
         let content;
         if (c.name === 'web_search' && query) {
           onSearchStart(query);
-          const results = await webSearch(query);
+          const results = await webSearch(query, 5, searchBase);
           onSearchDone(results);
           content = formatSearchResults(query, results, citeIndex, citeNext);
         } else {
@@ -1005,6 +1063,11 @@ async function chatRun(scene, req, body, emit) {
       return;
     }
     savePartial();
+    // 第一轮问答结束后让模型起个标题（不阻塞收尾）
+    const st0 = STATE.sessions[sid];
+    if (st0 && st0.messages.length === 2) {
+      autoTitle(sid, apiUrl, apiKey, model, st0.messages[0].content, text);
+    }
     emitDelta({ o: 'SET', p: 'response/status', v: 'FINISHED' });
     emitDelta({ o: 'SET', p: 'response/quasi_status', v: 'FINISHED' });
     emitEnd();
@@ -1081,6 +1144,16 @@ function jsonResponse(obj, status) {
   });
 }
 
+function bufToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let out = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    out += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(out);
+}
+
 async function handleRequest(req) {
   const url = new URL(req.url);
   const path = url.pathname;
@@ -1120,9 +1193,28 @@ async function handleRequest(req) {
     if (!file) return jsonResponse(errBiz('no file part'));
     const buf = await file.arrayBuffer();
     let text = '';
-    try { text = new TextDecoder('utf-8').decode(buf); } catch (e) { text = ''; }
-    const pub = addFile(file.name || 'file', buf.byteLength, text);
+    let dataUrl = '';
+    const nameLow = (file.name || '').toLowerCase();
+    const isImg = IMAGE_EXTS.some((e) => nameLow.slice(-e.length) === e);
+    if (isImg) {
+      dataUrl = 'data:' + (file.type || 'image/png') + ';base64,' + bufToBase64(buf);
+    } else {
+      try { text = new TextDecoder('utf-8').decode(buf); } catch (e) { text = ''; }
+    }
+    const pub = addFile(file.name || 'file', buf.byteLength, text, dataUrl);
     return jsonResponse(okBiz(pub));
+  }
+
+  // ---- 图片回显 ----
+  if (path.indexOf('/local/file/') === 0 && req.method === 'GET') {
+    const fid = path.slice('/local/file/'.length);
+    const f = STATE.files[fid];
+    if (!f || !f.dataUrl) return new Response('not found', { status: 404 });
+    const base64 = f.dataUrl.split(',')[1] || '';
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Response(bytes, { headers: { 'Content-Type': f.mime || 'image/png', 'Cache-Control': 'max-age=600' } });
   }
 
   // ---- 导出下载 ----

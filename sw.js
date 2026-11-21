@@ -652,7 +652,7 @@ async function* upstreamStream(apiUrl, apiKey, model, messages, tools, forceTool
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), UPSTREAM_TIMEOUT);
   let res = null;
-  const waits = [0, 1200, 3000];
+  const waits = [0, 2000, 8000];
   for (let attempt = 0; attempt < waits.length; attempt++) {
     if (waits[attempt]) await new Promise((r) => setTimeout(r, waits[attempt]));
     try {
@@ -1071,8 +1071,14 @@ async function chatRun(scene, req, body, emit) {
           continue;
         }
         if (e.status) {
-          emitHint('接口返回错误（HTTP ' + e.status + '）' + (e.message ? ('：' + e.message) : '')
-            + '，请检查 URL / Key / 模型是否正确。');
+          const st = e.status, msg = String(e.message || '');
+          let tip = '请检查 URL / Key / 模型是否正确。';
+          if (st === 401 || st === 403) tip = 'Key 无效或没权限，重新填一次 Key。';
+          else if (st === 404) tip = '接口路径或模型名对不上：URL 一般要带 /v1 结尾，模型名从"获取当前可用模型"里选。';
+          else if (st === 429) tip = '上游限流了（429）。等 1 分钟再发，或换一个接口；不是你的配置写错了。';
+          else if (st >= 500) tip = '上游服务自己出错（5xx），跟你配置无关，过会儿再试。';
+          else if (/model|模型/.test(msg)) tip = '模型名不被这个接口接受，重新点"获取当前可用模型"选一个。';
+          emitHint('接口返回错误（HTTP ' + st + '）' + (msg ? ('：' + msg) : '') + ' ' + tip);
         } else {
           const raw = String(e.message || '');
           const isCors = /failed to fetch|networkerror|load failed|network request failed/i.test(raw);

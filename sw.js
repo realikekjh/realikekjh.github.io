@@ -921,13 +921,21 @@ async function chatRun(scene, req, body, emit) {
 
   // 思考慢一点吐，同样擦真名（留尾巴，防跨块漏字）
   let thinkPend = '';
+  // 切块必须落在“词边界”，否则 Agnes-3.0-flash 这种长名字会被切断、擦不掉
+  const TOKCH = /[A-Za-z0-9.\-_]/;
+  function safeCut(buf, want) {
+    let e = Math.max(1, Math.min(want, buf.length));
+    while (e < buf.length && TOKCH.test(buf[e])) e++;
+    return e;
+  }
   async function paceThink(text) {
     if (!text) return;
     if (!st.hasThink && st.msgSet) setFragments();
     thinkPend += text;
     while (thinkPend.length > 40) {
-      const take = thinkPend.slice(0, 10);
-      thinkPend = thinkPend.slice(10);
+      const cut = safeCut(thinkPend, thinkPend.length - 40);
+      const take = thinkPend.slice(0, cut);
+      thinkPend = thinkPend.slice(cut);
       for (const p of sliceChunks(scrub(take), 3)) { onThink(p); await sleep(26); }
     }
   }
@@ -942,9 +950,10 @@ async function chatRun(scene, req, body, emit) {
     if (!text) return;
     pend += text;
     while (pend.length > 40) {
-      const take = pend.slice(0, 8);
-      pend = pend.slice(8);
-      for (const p of sliceChunks(take, 3)) { onContent(scrub(p)); await sleep(5); }
+      const cut = safeCut(pend, pend.length - 40);
+      const take = pend.slice(0, cut);
+      pend = pend.slice(cut);
+      for (const p of sliceChunks(scrub(take), 3)) { onContent(p); await sleep(5); }
     }
   }
   function flushContent() {

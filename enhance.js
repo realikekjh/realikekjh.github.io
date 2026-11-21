@@ -83,19 +83,13 @@
           '<div class="ds-local-panel__x" data-close aria-label="关闭">' + CLOSE + '</div>' +
         '</div>' +
         '<div class="ds-local-panel__bd">' +
-          '<div class="ds-local-tip">默认模型由模型网关分配。' +
-          '如需接入自己的接口，请填写下方信息。</div>' +
+          '<div class="ds-local-tip">留空即用内置模型，打开就能聊；' +
+          '填了自己的接口地址和 Key，就会覆盖内置模型。</div>' +
           '<div class="ds-local-field"><label>接口地址（URL）</label>' +
             '<input id="ds-url" placeholder="https://api.example.com/v1" value="' + esc(cfg.url || '') + '"></div>' +
           '<div class="ds-local-field"><label>API Key（SK）</label>' +
             '<input id="ds-key" type="password" placeholder="sk-..." value="' + esc(cfg.key || '') + '"></div>' +
-          '<div class="ds-local-field">' +
-            '<button class="ds-local-btn" id="ds-fetch">获取模型列表</button>' +
-            '<div class="ds-local-tip" id="ds-msg"></div>' +
-            '<div class="ds-local-model-list ds-local-hide" id="ds-list"></div>' +
-          '</div>' +
-          '<div class="ds-local-field"><label>当前模型</label>' +
-            '<div class="ds-local-model-list ds-local-hide" id="ds-saved"></div></div>' +
+          '<div class="ds-local-tip" id="ds-msg"></div>' +
         '</div>' +
         '<div class="ds-local-panel__ft">' +
           '<button class="ds-local-btn" data-close style="width:auto;padding:9px 16px;">取消</button>' +
@@ -114,55 +108,14 @@
     });
 
     // 已保存的模型回显
-    if (cfg.model) {
-      var saved = $('ds-saved');
-      saved.classList.remove('ds-local-hide');
-      saved.innerHTML = '<div class="ds-local-model-item"><input type="radio" name="dssaved" checked value="' +
-        esc(cfg.model) + '" id="saved_' + esc(cfg.model) + '"><span>' + esc(cfg.model) + '</span></div>';
-    }
 
     function setMsg(t) { msgEl.textContent = t || ''; }
-
-    $('ds-fetch').addEventListener('click', function () {
-      var url = ($('ds-url').value || '').trim().replace(/\/+$/, '');
-      var key = ($('ds-key').value || '').trim();
-      // URL/Key 留空时，后端用文件/网关配置列出默认模型，不用先填
-      var btn = $('ds-fetch');
-      btn.disabled = true; btn.textContent = '获取中…'; setMsg('');
-      // 模型列表走本地后端代理，浏览器不直连外网（避开 CSP 与 CORS）
-      fetch('/local/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: url, key: key }) })
-        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-        .then(function (d) {
-          var arr = d.data || d.models || (Array.isArray(d) ? d : []);
-          var names = arr.map(function (m) { return m.id || m.name || (typeof m === 'string' ? m : ''); }).filter(Boolean);
-          if (!names.length) { setMsg('接口返回为空'); return; }
-          listEl.classList.remove('ds-local-hide');
-          listEl.innerHTML = names.map(function (n, i) {
-            return '<div class="ds-local-model-item" data-model="' + esc(n) + '">' +
-              '<input type="radio" name="dsnew" value="' + esc(n) + '" id="m_' + i + '"><span>' + esc(n) + '</span></div>';
-          }).join('');
-          listEl.querySelectorAll('.ds-local-model-item').forEach(function (row) {
-            row.addEventListener('click', function () {
-              listEl.querySelectorAll('input').forEach(function (r) { r.checked = false; });
-              row.querySelector('input').checked = true;
-            });
-          });
-          setMsg('获取到 ' + names.length + ' 个模型');
-        })
-        .catch(function (err) { setMsg('获取失败：' + err.message); })
-        .then(function () { btn.disabled = false; btn.textContent = '获取模型列表'; });
-    });
 
     $('ds-save').addEventListener('click', function () {
       var url = ($('ds-url').value || '').trim().replace(/\/+$/, '');
       var key = ($('ds-key').value || '').trim();
-      var checked = mask.querySelector('input[name="dsnew"]:checked') || mask.querySelector('input[name="dssaved"]:checked');
-      var model = checked ? checked.value : '';
-      // URL 和 Key 要么一起填，要么都不填（只选模型时 URL/Key 用网关的）；
-      // 全空 = 清空面板配置，恢复用网关默认。
       if ((url && !key) || (!url && key)) { setMsg('URL 和 Key 请一起填写（或都不填）'); return; }
-      if (!model && (url || key)) { setMsg('请选择一个模型（先点「获取模型列表」）'); return; }
-      cfgSet({ url: url, key: key, model: model });
+      cfgSet({ url: url, key: key });
       mask.remove();
       // 不用刷新：guard.js 每次发消息时都重读 localStorage，新配置
       // 下一条消息立即生效。旧版这里 location.reload() 会闪屏，

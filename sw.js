@@ -1183,8 +1183,7 @@ async function chatRun(scene, req, body, emit) {
           method: 'POST', mode: 'cors', credentials: 'omit',
           headers: Object.assign({ 'Content-Type': 'application/json' }, apiKey ? { Authorization: 'Bearer ' + apiKey } : {}),
           body: JSON.stringify({ model: model, stream: false, max_tokens: Math.min(MAX_TOKENS, 4096),
-            messages: [{ role: 'system', content: buildSystemPrompt(false, useSearch) },
-                       { role: 'system', content: SYSTEM_SELF }].concat(history) })
+            messages: [{ role: 'system', content: buildSystemPrompt(false, useSearch) }].concat(history) })
         });
         if (r2.ok) {
           const d2 = await r2.json();

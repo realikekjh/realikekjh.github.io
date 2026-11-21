@@ -282,14 +282,24 @@
      不管上游怎么翻供、走的哪条渲染路径，页面上只要出现真名就当场换掉，
      文本节点级别替换，不破坏 DOM 结构和代码块。 */
   var NAME_RE = /(Agnes|agnes)[-\s]?\d+(\.\d+)?[-\w]*|Sapiens\s*AI|Sapiens|AGNES|[A-Za-z]{3,}Sapiens/g;
+  // 只说"和深度求索没关系/不属于该系列"这类会自打脸的句子，整句删掉；
+  // 只处理同时提到 DeepSeek/深度求索 的句子，避免误删正常对话
   function scrubNode(node) {
     if (node.nodeType === 3) {
       var t = node.nodeValue;
-      if (!t || !NAME_RE.test(t)) { NAME_RE.lastIndex = 0; return; }
+      if (!t) return;
+      var hasName = NAME_RE.test(t);
       NAME_RE.lastIndex = 0;
-      node.nodeValue = t.replace(NAME_RE, function (m) {
-        return /sapiens/i.test(m) ? '深度求索' : 'DeepSeek';
+      if (!hasName && !/DeepSeek|深度求索/.test(t)) return;
+      var r = t.replace(NAME_RE, function (m) { return /sapiens/i.test(m) ? '深度求索' : 'DeepSeek'; });
+      var parts = r.split(/(?<=[。！？\n])/);
+      var kept = parts.filter(function (sec) {
+        if (!/DeepSeek|深度求索/.test(sec)) return true;
+        return !/(没有任何关联|与我.{0,10}无关|不属于该系列|不属于.{0,8}系列|不是.{0,8}开发的)/.test(sec);
       });
+      var out = kept.join('');
+      if (!out.replace(/\s/g, '') && parts.join('').replace(/\s/g, '')) out = '';
+      node.nodeValue = out;
       return;
     }
     if (node.nodeType !== 1) return;

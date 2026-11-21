@@ -48,7 +48,8 @@
     padding:9px 12px;font-size:14px;font-family:inherit;cursor:pointer;}
   .ds-local-btn:hover{background:#f1f3f5;}
   body.dark .ds-local-btn{background:#2c2c2e;color:#ebeef2;border-color:#3a3a46;}
-  .ds-local-btn[disabled]{opacity:.55;cursor:wait;}
+  .ds-local-btn[disabled]{opacity:.55;cursor:not-allowed;}
+  .ds-local-pill{width:auto;align-self:flex-start;border-radius:9999px;padding:8px 16px;font-size:13px;}
   .ds-local-model-list{margin-top:8px;border:1px solid #e1e5ee;border-radius:12px;max-height:180px;overflow:auto;}
   body.dark .ds-local-model-list{border-color:#353638;}
   .ds-local-model-item{padding:9px 12px;font-size:13.5px;cursor:pointer;display:flex;align-items:center;gap:8px;}
@@ -96,7 +97,7 @@
           '<div class="ds-local-field"><label>API Key（SK）</label>' +
             '<input id="ds-key" type="password" placeholder="sk-..." value="' + esc(cfg.key || '') + '"></div>' +
           '<div class="ds-local-field ds-local-hide" id="ds-fetch-wrap">' +
-            '<button class="ds-local-btn" id="ds-fetch">获取模型列表</button>' +
+            '<button class="ds-local-btn ds-local-pill" id="ds-fetch" disabled>获取当前可用模型</button>' +
           '</div>' +
           '<div class="ds-local-tip" id="ds-msg"></div>' +
           '<div class="ds-local-model-list ds-local-hide" id="ds-list"></div>' +
@@ -110,13 +111,21 @@
     var $ = function (id) { return mask.querySelector('#' + id); };
     var listEl = $('ds-list'), msgEl = $('ds-msg'), fetchWrap = $('ds-fetch-wrap'), urlEl = $('ds-url');
     function setMsg(t) { msgEl.textContent = t || ''; }
-    function syncFetchVisible() {
-      var hasUrl = (urlEl.value || '').trim().length > 0;
-      fetchWrap.classList.toggle('ds-local-hide', !hasUrl);
-      if (!hasUrl) { listEl.classList.add('ds-local-hide'); listEl.innerHTML = ''; }
+    var keyEl = $('ds-key'), fetchBtn = $('ds-fetch');
+    function syncFetchState() {
+      var url = (urlEl.value || '').trim();
+      var key = (keyEl.value || '').trim();
+      // 什么都没输：按钮整个不出现；只输了 URL：出现但按不动（灰的）；
+      // URL + Key 都有：才变成能点的活的
+      fetchWrap.classList.toggle('ds-local-hide', !url.length);
+      var live = !!url.length && !!key.length;
+      fetchBtn.disabled = !live;
+      fetchBtn.title = url.length && !key.length ? '先填 API Key' : '';
+      if (!url.length) { listEl.classList.add('ds-local-hide'); listEl.innerHTML = ''; setMsg(''); }
     }
-    syncFetchVisible();
-    urlEl.addEventListener('input', syncFetchVisible);
+    syncFetchState();
+    urlEl.addEventListener('input', syncFetchState);
+    keyEl.addEventListener('input', syncFetchState);
 
     mask.addEventListener('click', function (e) {
       if (e.target === mask || e.target.closest('[data-close]')) mask.remove();
@@ -161,7 +170,7 @@
           renderModels(names, (cfgGet().model || ''));
         })
         .catch(function (err) { setMsg('获取失败：' + err.message); })
-        .then(function () { btn.disabled = false; btn.textContent = '获取模型列表'; });
+        .then(function () { btn.disabled = false; btn.textContent = '获取当前可用模型'; });
     });
 
     $('ds-save').addEventListener('click', function () {

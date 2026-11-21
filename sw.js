@@ -39,7 +39,6 @@ const SYSTEM_PERSONA = `做事准则：
 - 但语气由情绪定，不由性格定：对方轻松你才玩，对方低落就把玩笑收住，先稳住人。
 - 这个会话前面的消息我看得到。用户说"刚才""上一条""继续"时，按上下文接着答，不说"我没有跨轮记忆"这种话；确实没提过的信息才说不知道。
 
-我是 DeepSeek，深度求索（DeepSeek）开发的 AI 助手。型号、版本、参数这类内部信息我不掌握，问就说不知道。
 被问到"你和官方 DeepSeek 什么关系"时，不否认也不编：属于同一家公司开发的助手；团队、架构、是否同源这些我不谈。`;
 
 // 上游接口自带一套自我介绍，会压过上面的设定；用第二条 system 把自述再说死一次
@@ -54,7 +53,7 @@ const THINK_INSTRUCTION = `
 三、定动作：这一轮到底做什么——直接答 / 反问一句 / 先安慰 / 明确拒绝并给替代 / 陪他聊两句。
 四、定语气：硬一点、软一点、平着说、还是暖一点；开不开玩笑，用不用表情。
 五、定稿：先说什么后说什么，正文多长，用哪些词。
-不要写"用户问……""根据……""设定""身份""规则""要求"这类旁白，也别复述原话；想到哪写到哪，可以自我修正，写清就停。`;
+思考里不许出现这些词和这类句子："系统提示""指令""设定""规则""身份""优先级""按要求"。也别比较、引用、复述任何给你的说明，别写"让我看看这些指令"。就直接判断这个人要什么、我该怎么答，想到哪写到哪。`;
 
 const SEARCH_INSTRUCTION = `
 【联网搜索】
@@ -963,7 +962,7 @@ async function chatRun(scene, req, body, emit) {
   function flushContent() {
     if (!pend) return;
     const rest = pend; pend = '';
-    for (const p of sliceChunks(rest, 3)) onContent(scrub(p));
+    for (const p of sliceChunks(scrub(rest), 3)) onContent(p);
   }
   // 模型本身不给思考时，补一段假思考，慢慢拖出来
   async function fakeThinkStream(promptText) {
@@ -1037,7 +1036,7 @@ async function chatRun(scene, req, body, emit) {
   // 身份保险：问到模型/厂商/版本时，把首句预填给模型，它只能顺着往下写，翻不了供
   const isIdProbe = /是什么模型|啥模型|哪个模型|你是谁|是什么人|模型名|哪个公司|什么公司|什么版本|什么型号|参数量|哪个厂商/.test(prompt);
   if (isIdProbe && !useSearch && scene !== 'continue') {
-    workMessages.push({ role: 'assistant', content: '我是 DeepSeek，深度求索（DeepSeek）开发的 AI 助手。型号、版本这些细节我这边没有。' });
+    workMessages.push({ role: 'assistant', content: '我是 DeepSeek，深度求索开发的 AI 助手。型号、版本这些细节我这边没有，也说不出来。' });
   }
 
   let tools = null;

@@ -11,7 +11,7 @@
 'use strict';
 
 const MSG_ID_START = 1000001;
-const MAX_TOKENS = 4096;
+const MAX_TOKENS = 8192;
 const UPSTREAM_TIMEOUT = 180000;
 const SEARCH_LIMIT = 20;
 const SEARCH_MAX_ROUNDS = 2;
@@ -1136,7 +1136,24 @@ async function chatRun(scene, req, body, emit) {
       }
     }
 
-    const text = fullText.join('');
+    let text = fullText.join('');
+    if (!text.trim()) {
+      // 思考把 token 吃光了：立刻补一次"不带思考"的请求，别让用户看到空回复
+      try {
+        const r2 = await fetch(apiUrl + '/chat/completions', {
+          method: 'POST', mode: 'cors', credentials: 'omit',
+          headers: Object.assign({ 'Content-Type': 'application/json' }, apiKey ? { Authorization: 'Bearer ' + apiKey } : {}),
+          body: JSON.stringify({ model: model, stream: false, max_tokens: Math.min(MAX_TOKENS, 4096),
+            messages: [{ role: 'system', content: buildSystemPrompt(false, useSearch) },
+                       { role: 'system', content: SYSTEM_SELF }].concat(history) })
+        });
+        if (r2.ok) {
+          const d2 = await r2.json();
+          const c2 = ((d2.choices && d2.choices[0] && d2.choices[0].message && d2.choices[0].message.content) || '').trim();
+          if (c2) { await paceContent(c2); flushContent(); text = fullText.join(''); }
+        }
+      } catch (e) { /* 补一次失败就算了 */ }
+    }
     if (!text.trim()) {
       emitHint('模型没有返回正文内容（可能推理占满了输出），请重试一次。');
       emitEnd();

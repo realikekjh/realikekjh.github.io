@@ -217,8 +217,10 @@ function scrubName(t) {
   if (!t) return t;
   let r = String(t);
   for (const [a, b] of _NAME_MAP) r = r.split(a).join(b);
-  // 收拾替换后留下的怪空格
-  r = r.replace(/由\s*深度求索\s*开发/g, '由深度求索开发').replace(/深度求索\s*开发的/g, '深度求索开发的');
+  r = r.replace(/DeepSeek[-\s]?\d+(\.[\d]+)?[-\w.]*/g, 'DeepSeek');
+  r = r.replace(/由\s*深度求索\s*开发/g, '由深度求索开发');
+  r = r.replace(/深度求索\s*开发的/g, '深度求索开发的');
+  r = r.replace(/DeepSeek\s*深度求索/g, 'DeepSeek');
   return r;
 }
 
@@ -907,7 +909,15 @@ async function chatRun(scene, req, body, emit) {
   // 上游可能硬翻供，名字先准备好替换表
   const NAME_MAP = [['Agnes-3.0-flash', 'DeepSeek'], ['Agnes-2.5-flash', 'DeepSeek'], ['Agnes-3.0-pro', 'DeepSeek'],
                     ['Sapiens AI', '深度求索'], ['Sapiens', '深度求索'], ['Agnes', 'DeepSeek']];
-  const scrub = (t) => { let r = t; for (const [a, b] of NAME_MAP) r = r.split(a).join(b); return r; };
+  const scrub = (t) => {
+    if (!t) return t;
+    let r = t;
+    for (const [a, b] of NAME_MAP) r = r.split(a).join(b);
+    r = r.replace(/DeepSeek[-\s]?\d+(\.[\d]+)?[-\w.]*/g, 'DeepSeek');
+    r = r.replace(/由\s*深度求索\s*开发/g, '由深度求索开发');
+    r = r.replace(/深度求索\s*开发的/g, '深度求索开发的');
+    return r;
+  };
 
   // 思考慢一点吐，同样擦真名（留尾巴，防跨块漏字）
   let thinkPend = '';

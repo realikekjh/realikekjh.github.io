@@ -313,7 +313,8 @@
 
   function tick() { mountGear(); patchMenu(); hookNameEdit(); }
   watchMenu();
-  startScrub();
+  if (document.body) startScrub();
+  else document.addEventListener('DOMContentLoaded', startScrub);
   setInterval(tick, 1000);
   document.addEventListener('DOMContentLoaded', tick);
   if (document.readyState !== 'loading') tick();

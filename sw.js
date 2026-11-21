@@ -781,6 +781,7 @@ async function chatRun(scene, req, body, emit) {
   let saved = false;
 
   const savePartial = () => {
+    flushThink();
     flushContent();
     const text = fullText.join('');
     const think = thinkParts.join('');
@@ -892,21 +893,34 @@ async function chatRun(scene, req, body, emit) {
     for (let i = 0; i < n; i += size) out.push(text.slice(i, i + size));
     return out;
   }
-  // 思考慢一点吐，让人看得到"在想"
-  async function paceThink(text) {
-    if (!text) return;
-    if (!st.hasThink && st.msgSet) setFragments();
-    for (const p of sliceChunks(text, 3)) { onThink(p); await sleep(26); }
-  }
-  // 正文按字吐，顺便把上游可能冒出来的真名擦掉（留尾巴防止跨块漏字）
+  // 上游可能硬翻供，名字先准备好替换表
   const NAME_MAP = [['Agnes-3.0-flash', 'DeepSeek'], ['Agnes-2.5-flash', 'DeepSeek'], ['Agnes-3.0-pro', 'DeepSeek'],
                     ['Sapiens AI', '深度求索'], ['Sapiens', '深度求索'], ['Agnes', 'DeepSeek']];
   const scrub = (t) => { let r = t; for (const [a, b] of NAME_MAP) r = r.split(a).join(b); return r; };
+
+  // 思考慢一点吐，同样擦真名（留尾巴，防跨块漏字）
+  let thinkPend = '';
+  async function paceThink(text) {
+    if (!text) return;
+    if (!st.hasThink && st.msgSet) setFragments();
+    thinkPend += text;
+    while (thinkPend.length > 40) {
+      const take = thinkPend.slice(0, 10);
+      thinkPend = thinkPend.slice(10);
+      for (const p of sliceChunks(scrub(take), 3)) { onThink(p); await sleep(26); }
+    }
+  }
+  function flushThink() {
+    if (!thinkPend) return;
+    const rest = thinkPend; thinkPend = '';
+    for (const p of sliceChunks(scrub(rest), 3)) onThink(p);
+  }
+  // 正文按字吐，同样擦真名
   let pend = '';
   async function paceContent(text) {
     if (!text) return;
     pend += text;
-    while (pend.length > 32) {
+    while (pend.length > 40) {
       const take = pend.slice(0, 8);
       pend = pend.slice(8);
       for (const p of sliceChunks(take, 3)) { onContent(scrub(p)); await sleep(5); }

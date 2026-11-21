@@ -23,7 +23,7 @@
 
   /* ---------- 样式 ---------- */
   var CSS = `
-  .ds-local-gear{position:fixed;left:220px;bottom:14px;width:28px;height:28px;z-index:99997;
+  .ds-local-gear{display:none;position:fixed;left:220px;bottom:14px;width:28px;height:28px;z-index:99997;
     display:flex;align-items:center;justify-content:center;border-radius:8px;cursor:pointer;
     color:var(--text-2,#61666b);transition:background .15s;}
   .ds-local-gear:hover{background:rgba(120,130,145,.15);color:var(--text,#1b1b1c);}
@@ -187,21 +187,57 @@
     });
   }
 
-  /* ---------- 注入齿轮按钮 ---------- */
+  /* ---------- 注入菜单项 ----------
+     底部那个浮动齿轮太碍眼，改成塞进"账号 → 三点菜单"里，
+     位置在 Settings 上面一行。侧栏不开时什么都不显示。 */
   var gearBtn = null;
   function mountGear() {
     if (gearBtn) return;
-    var sidebar = document.querySelector('.dc04ec1d') ||
-                  document.querySelector('[class*="dc04ec1d"]');
-    if (!sidebar) return;
     gearBtn = document.createElement('div');
     gearBtn.className = 'ds-local-gear';
     gearBtn.title = '模型网关';
     gearBtn.setAttribute('role', 'button');
-    gearBtn.setAttribute('aria-label', '模型网关');
     gearBtn.innerHTML = GEAR;
     gearBtn.addEventListener('click', function (e) { e.stopPropagation(); openPanel(); }, true);
     document.body.appendChild(gearBtn);
+  }
+
+  function patchMenu() {
+    var menu = document.querySelector('.ds-dropdown-menu');
+    if (!menu || menu.getAttribute('data-ds-local')) return;
+    var opts = [].slice.call(menu.children);
+    var anchor = null;
+    for (var i = 0; i < opts.length; i++) {
+      if (getComputedStyle(opts[i]).display !== 'none') { anchor = opts[i]; break; }
+    }
+    if (!anchor) return;
+    menu.setAttribute('data-ds-local', '1');
+    var item = anchor.cloneNode(true);
+    item.removeAttribute('style');
+    item.classList.remove('ds-dropdown-menu-option--none');
+    item.setAttribute('data-ds-local-item', '1');
+    var label = item.querySelector('span') || item;
+    if (label) label.textContent = '模型网关';
+    // 图标换成齿轮
+    var ic = item.querySelector('.ds-dropdown-menu-option__icon');
+    if (ic) ic.innerHTML = GEAR;
+    item.addEventListener('click', function (e) {
+      e.stopPropagation();
+      e.preventDefault();
+      var mask = document.querySelector('.ds-local-mask');
+      if (mask) mask.remove();
+      openPanel();
+    }, true);
+    menu.insertBefore(item, anchor);
+  }
+
+  function watchMenu() {
+    try {
+      var mo = new MutationObserver(function () { patchMenu(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    } catch (e) {}
+    document.addEventListener('click', function () { setTimeout(patchMenu, 120); }, true);
+    patchMenu();
   }
 
   /* ---------- 头像菜单：不再整块拦截点击 ----------
@@ -214,7 +250,35 @@
      下载项现由 guard.js 的 scrub（MutationObserver + 作用域查询）精确藏整行，
      这里不再重复扫 DOM。 */
 
-  function tick() { mountGear(); }
+
+  /* ---------- 用户名可改 ----------
+     点 "Name / 用户名" 那一行改名，存到 SW 的 profile 里，
+     /users/current 会回吐新名字。 */
+  function hookNameEdit() {
+    var rows = [].slice.call(document.querySelectorAll('div,span'));
+    for (var i = 0; i < rows.length; i++) {
+      var el = rows[i];
+      if (el.getAttribute('data-ds-name')) continue;
+      var t = (el.textContent || '').trim();
+      if (t !== 'Name (tap to edit)' && t !== '用户名（点击可改）') continue;
+      if (el.children.length > 0) continue;
+      el.setAttribute('data-ds-name', '1');
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        var cur = document.body.innerText.indexOf('DeepSeek') >= 0 ? 'DeepSeek' : '';
+        var name = window.prompt('新的用户名（不超过 16 字）', cur);
+        if (!name || !name.trim()) return;
+        fetch('/local/profile', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name.trim().slice(0, 16) })
+        }).then(function () { location.reload(); });
+      }, true);
+    }
+  }
+
+  function tick() { mountGear(); patchMenu(); hookNameEdit(); }
+  watchMenu();
   setInterval(tick, 1000);
   document.addEventListener('DOMContentLoaded', tick);
   if (document.readyState !== 'loading') tick();

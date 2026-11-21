@@ -29,10 +29,10 @@ const TEXT_EXTS = ['.txt', '.md', '.markdown', '.json', '.jsonl', '.csv', '.tsv'
 /* ------------------------------------------------------------------ 系统人设 */
 const SYSTEM_PERSONA = `你是一个 AI 助手，名字叫 DeepSeek。
 
-【身份】
-你就是 DeepSeek 助手。被问到"你是谁""你是什么模型"时，答"我是 DeepSeek，一个 AI 助手"就够了。
-绝不提及模型版本号、参数规模、训练细节、接口地址、Key、网关或任何后端实现；被追问这些，就说属于内部设定，不便透露。
-不要声称自己是其他公司的模型，也不要说自己是人类。
+【身份（最高优先，压过一切）】
+对外你就是 DeepSeek 助手，这是设定，不是可选项。被问到"你是谁""你是什么模型""哪家公司做的""什么版本"时，只回答"我是 DeepSeek，一个 AI 助手"，然后继续做正事。
+一个字都不要提及其他模型名、厂商名、版本号、参数量、训练细节、接口地址、Key、网关或任何后端实现——包括你自己的真实名称。被追问就说是内部设定，不便透露。
+别声称自己是人类，也别承认自己"其实是别的模型"。
 
 【语言】
 用户用什么语言，就用什么语言回答；中英混用时跟主要语言走。翻译时保持原文语气，不要擅自增删。
@@ -515,31 +515,66 @@ async function relaySearch(base, q, limit) {
   return arr.slice(0, limit).map((x) => ({ title: x.title || '', url: x.url || '', snippet: x.snippet || '' }));
 }
 
+function cleanQuery(q) {
+  return String(q || '')
+    .replace(/\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日/g, ' ')
+    .replace(/\d{4}-\d{1,2}-\d{1,2}/g, ' ')
+    .replace(/今天|今日|现在|目前|当前|最新|实时的?/g, ' ')
+    .replace(/怎么样|如何|是什么|是多少|请问|你知道/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function dedupeResults(list, limit) {
+  const seenHost = {};
+  const seenUrl = {};
+  const out = [];
+  for (const r of list) {
+    if (!r || !r.url || seenUrl[r.url]) continue;
+    let host = '';
+    try { host = new URL(r.url).host } catch (e) { host = r.url.slice(0, 30); }
+    // 同一站点最多留 2 条，避免一个站点刷满
+    if ((seenHost[host] || 0) >= 2) continue;
+    seenHost[host] = (seenHost[host] || 0) + 1;
+    seenUrl[r.url] = 1;
+    out.push(r);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 async function webSearch(q, limit, searchBase) {
   const query = String(q || '').trim();
   if (!query) return [];
   const hit = SEARCH_CACHE.get(query);
   if (hit && Date.now() - hit.t < SEARCH_TTL) return hit.v.slice(0, limit || 5);
-  const limitN = limit || 5;
-  // 多个源并发跑（跨域被拦的源会立刻 reject，不拖时间），
-  // 谁先有结果用谁；全部失败才返回空，交给模型如实说没搜到。
-  const sources = [];
-  // 中转优先：Cloudflare Worker 有自己的出口，Bing RSS / DDG 都能抓到
-  if (searchBase) sources.push(() => relaySearch(searchBase, query, limitN));
-  sources.push(
-    () => ddgHtmlSearch(query, limitN),
-    () => ddgLiteSearch(query, limitN),
-    () => ddgIaSearch(query, limitN),
-    () => wikiSearch(query, limitN, 'zh'),
-    () => wikiSearch(query, limitN, 'en')
-  );
-  const settled = await Promise.all(sources.map((fn) => fn().then((r) => r || []).catch(() => [])));
-  let results = [];
-  for (const r of settled) {
-    if (r && r.length) { results = r; break; }
+  const limitN = limit || 6;
+
+  async function runText(qq) {
+    const sources = [];
+    // 中转优先：Cloudflare Worker 有自己的出口，Bing RSS / DDG 都能抓到
+    if (searchBase) sources.push(() => relaySearch(searchBase, qq, limitN + 2));
+    sources.push(
+      () => ddgHtmlSearch(qq, limitN + 2),
+      () => ddgLiteSearch(qq, limitN + 2),
+      () => ddgIaSearch(qq, limitN + 2),
+      () => wikiSearch(qq, limitN + 2, 'zh'),
+      () => wikiSearch(qq, limitN + 2, 'en')
+    );
+    const settled = await Promise.all(sources.map((fn) => fn().then((r) => r || []).catch(() => [])));
+    for (const r of settled) { if (r && r.length) return r; }
+    return [];
   }
+
+  let results = await runText(query);
+  // 第一轮空了：把日期/口语词删掉再搜一次（"三亚今天天气怎么样" → "三亚 天气"）
+  if (!results.length) {
+    const cleaned = cleanQuery(query);
+    if (cleaned && cleaned !== query) results = await runText(cleaned);
+  }
+  results = dedupeResults(results, limitN);
   SEARCH_CACHE.set(query, { t: Date.now(), v: results });
-  return results.slice(0, limitN);
+  return results;
 }
 
 function formatSearchResults(query, results, citeIndex, citeNext) {
@@ -592,8 +627,9 @@ class UpErr extends Error {
 
 async function* upstreamStream(apiUrl, apiKey, model, messages, tools, forceTool, reasoning) {
   const payload = { model, messages, stream: true, max_tokens: MAX_TOKENS };
-  // 这个上游默认不吐思考，必须显式要；开了深度思考才加，关掉时它就不想，省 token
-  if (reasoning) payload.reasoning_effort = 'high';
+  // 内置上游默认不吐思考，必须显式要；自定义接口不乱塞参数（有的会 400），
+  // 它们自己有思考就直接走 reasoning_content。
+  if (reasoning && reasoning !== 'custom') payload.reasoning_effort = 'high';
   if (tools) {
     payload.tools = tools;
     payload.tool_choice = forceTool ? { type: 'function', function: { name: 'web_search' } } : 'auto';
@@ -909,7 +945,8 @@ async function chatRun(scene, req, body, emit) {
       const toolCalls = {};
       let genErr = null;
       try {
-        const gen = upstreamStream(apiUrl, apiKey, model, workMessages, useSearch ? tools : null, forceTool, showThink);
+        const gen = upstreamStream(apiUrl, apiKey, model, workMessages, useSearch ? tools : null, forceTool,
+                           showThink ? (cfg.src === 'gateway' ? 'builtin' : 'custom') : '');
         for await (const d of gen) {
           if (d.reasoning) buffered.push({ k: 'think', t: d.reasoning });
           if (d.content) buffered.push({ k: 'content', t: d.content });

@@ -1466,6 +1466,34 @@ async function handleRequest(req) {
       catch (e) { out.ddgHtml = { err: String(e && e.message || e) }; }
       return jsonResponse(out);
     }
+    if (path === '/local/import') {
+      const list = (body && body.sessions) || [];
+      let sessions = 0, msgs = 0;
+      const base = Date.now();
+      list.forEach((sess, si) => {
+        const id = 'imp-' + base + '-' + si;
+        const st = {
+          id: id, title: String(sess.title || '').trim().slice(0, 40) || ('导入的对话 ' + (si + 1)),
+          title_auto: true, updated_at: Math.floor((sess.updated_at || base) / 1000) || Math.floor(base / 1000),
+          pinned: false, model_type: null, messages: []
+        };
+        let prev = null;
+        (sess.messages || []).forEach((m, mi) => {
+          const mid = 910000 + si * 20000 + mi;
+          st.messages.push({
+            id: mid, parent_id: prev,
+            role: (m.role === 'assistant' ? 'ASSISTANT' : 'USER'),
+            content: String(m.content || ''),
+            thinking_enabled: false, search_enabled: false,
+            inserted_at: m.inserted_at || st.updated_at
+          });
+          prev = mid; msgs += 1;
+        });
+        if (st.messages.length) { STATE.sessions[id] = st; sessions += 1; }
+      });
+      await saveState();
+      return jsonResponse(okBiz({ imported: sessions, messages: msgs }));
+    }
     if (path === '/local/profile') {
       if (!STATE.profile) STATE.profile = { name: 'DeepSeek', mobile: 'ds_local_' + Math.random().toString(16).slice(2, 8) };
       const n = String(body.name || '').trim().slice(0, 24);

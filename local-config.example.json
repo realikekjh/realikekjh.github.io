@@ -1,0 +1,5 @@
+{
+  "url": "https://api.example.com/v1",
+  "key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "model": "your-model-name"
+}

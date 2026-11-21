@@ -1,0 +1,1 @@
+"use strict";(self.rspackChunk_deepseek_chat=self.rspackChunk_deepseek_chat||[]).push([[14988],{25959(e,s,c){c.d(s,{createArchitectureServices:()=>r.S});var r=c(2771);c(79343)}}]);

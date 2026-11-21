@@ -47,7 +47,10 @@
 
   try {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(function () {
+      navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' }).then(function (reg) {
+        // 每次打开都主动查一次新版本，别让用户卡在旧逻辑上
+        try { reg.update(); } catch (e) {}
+        if (reg.waiting) { try { reg.waiting.postMessage('skip'); } catch (e) {} }
         if (navigator.serviceWorker.controller) { startNow(); return; }
         navigator.serviceWorker.addEventListener('controllerchange', onControlled);
         setTimeout(function () {

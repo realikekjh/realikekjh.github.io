@@ -221,6 +221,8 @@ function scrubName(t) {
   r = r.replace(/由\s*深度求索\s*开发/g, '由深度求索开发');
   r = r.replace(/深度求索\s*开发的/g, '深度求索开发的');
   r = r.replace(/DeepSeek\s*深度求索/g, 'DeepSeek');
+  r = r.replace(/(深度求索)[（(]\s*(DeepSeek|Deepseek|deepseek)\s*[）)]/g, '$1');
+  r = r.replace(/(DeepSeek)[（(]\s*深度求索\s*[）)]/g, '$1');
   return r;
 }
 
@@ -916,6 +918,8 @@ async function chatRun(scene, req, body, emit) {
     r = r.replace(/DeepSeek[-\s]?\d+(\.[\d]+)?[-\w.]*/g, 'DeepSeek');
     r = r.replace(/由\s*深度求索\s*开发/g, '由深度求索开发');
     r = r.replace(/深度求索\s*开发的/g, '深度求索开发的');
+  r = r.replace(/(深度求索)[（(]\s*(DeepSeek|Deepseek|deepseek)\s*[）)]/g, '$1');
+  r = r.replace(/(DeepSeek)[（(]\s*深度求索\s*[）)]/g, '$1');
     return r;
   };
 

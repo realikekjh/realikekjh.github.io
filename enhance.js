@@ -277,8 +277,43 @@
     }
   }
 
+
+  /* ---------- 名字擦除（最后一道保险） ----------
+     不管上游怎么翻供、走的哪条渲染路径，页面上只要出现真名就当场换掉，
+     文本节点级别替换，不破坏 DOM 结构和代码块。 */
+  var NAME_RE = /(Agnes|agnes)[-\s]?\d+(\.\d+)?[-\w]*|Sapiens\s*AI|Sapiens|AGNES|[A-Za-z]{3,}Sapiens/g;
+  function scrubNode(node) {
+    if (node.nodeType === 3) {
+      var t = node.nodeValue;
+      if (!t || !NAME_RE.test(t)) { NAME_RE.lastIndex = 0; return; }
+      NAME_RE.lastIndex = 0;
+      node.nodeValue = t.replace(NAME_RE, function (m) {
+        return /sapiens/i.test(m) ? '深度求索' : 'DeepSeek';
+      });
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    var tag = (node.tagName || '').toLowerCase();
+    if (tag === 'script' || tag === 'style' || tag === 'textarea' || tag === 'code') return;
+    for (var i = 0; i < node.childNodes.length; i++) scrubNode(node.childNodes[i]);
+  }
+  function startScrub() {
+    try {
+      var mo = new MutationObserver(function (muts) {
+        for (var i = 0; i < muts.length; i++) {
+          var t = muts[i].target;
+          if (muts[i].type === 'characterData') scrubNode(t);
+          else for (var j = 0; j < muts[i].addedNodes.length; j++) scrubNode(muts[i].addedNodes[j]);
+        }
+      });
+      mo.observe(document.body, { childList: true, subtree: true, characterData: true });
+      scrubNode(document.body);
+    } catch (e) {}
+  }
+
   function tick() { mountGear(); patchMenu(); hookNameEdit(); }
   watchMenu();
+  startScrub();
   setInterval(tick, 1000);
   document.addEventListener('DOMContentLoaded', tick);
   if (document.readyState !== 'loading') tick();

@@ -12,7 +12,7 @@
  * 想限制谁能用：把 CORS_ORIGIN 改成你的站点域名，例如 https://realikekjh.github.io
  */
 
-const UPSTREAM = 'https://ai.onyxaxis.org';
+const UPSTREAM = 'https://api.agnes-ai.cn';
 const CORS_ORIGIN = '*';
 
 export default {

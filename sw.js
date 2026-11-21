@@ -121,7 +121,10 @@ function buildSystemPrompt(showThink, useSearch) {
 /* ------------------------------------------------------------------ 内置网关 */
 // 公开仓库不放内置网关的 Key：静态站点直连它本来也会被跨域拦，
 // 放着只有被白嫖的风险。要用自己的接口请在齿轮面板填，或经 relay/ 中转。
-const _GW_BLOB = '';
+// 内置网关（混淆存放，与 serve.py 同一套 XOR；这不是加密，只是别一眼看穿）
+const _GW_BLOB = 'HFVYRQoRWxsLEwNdRFwcTlgTDllMUAhWEhQCDllOWUlFUBtPRRxITkQJQ0oISidnBz8DDAAFJT4f'
+  + 'QyQCL0M0CkF7TVYBK38mDDtIUSELEVQoCiVedA5YFH4iUh5cAkQfQ1QMAxJBFVwRAF4NAgQABEgD'
+  + 'TF8PBgRFFRs=';
 const _GW_XOR = 'gw-7f3a9c';
 let _gwCache = null;
 

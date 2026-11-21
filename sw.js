@@ -211,9 +211,20 @@ function sessionPublic(s) {
   };
 }
 
+const _NAME_MAP = [['Agnes-3.0-flash','DeepSeek'],['Agnes-2.5-flash','DeepSeek'],['Agnes-3.0-pro','DeepSeek'],
+  ['Sapiens AI','深度求索'],['Sapiens','深度求索'],['Agnes','DeepSeek'],['agnes','DeepSeek']];
+function scrubName(t) {
+  if (!t) return t;
+  let r = String(t);
+  for (const [a, b] of _NAME_MAP) r = r.split(a).join(b);
+  // 收拾替换后留下的怪空格
+  r = r.replace(/由\s*深度求索\s*开发/g, '由深度求索开发').replace(/深度求索\s*开发的/g, '深度求索开发的');
+  return r;
+}
+
 function messagePublic(m) {
   const frags = [];
-  const think = m.think || '';
+  const think = scrubName(m.think || '');
   if (think.trim()) frags.push({ id: 1, type: 'THINK', content: think });
   const search = m.search || [];
   const refs = [null];
@@ -233,7 +244,7 @@ function messagePublic(m) {
   frags.push({
     id: frags.length + 1,
     type: m.role === 'USER' ? 'REQUEST' : 'RESPONSE',
-    content: m.content || '',
+    content: scrubName(m.content || ''),
     references: refs
   });
   return {
@@ -783,8 +794,8 @@ async function chatRun(scene, req, body, emit) {
   const savePartial = () => {
     flushThink();
     flushContent();
-    const text = fullText.join('');
-    const think = thinkParts.join('');
+    const text = scrubName(fullText.join(''));
+    const think = scrubName(thinkParts.join(''));
     if (text.trim() && !saved) {
       saved = true;
       addMessage(sid, {

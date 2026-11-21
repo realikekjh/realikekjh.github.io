@@ -321,10 +321,14 @@
     } catch (e) {}
   }
 
-  function tick() { mountGear(); patchMenu(); hookNameEdit(); }
+  var nameHookDone = false;
+  function tick() {
+    mountGear(); patchMenu();
+    if (!nameHookDone && document.querySelector('[class*="profile"]')) { nameHookDone = true; hookNameEdit(); }
+  }
   watchMenu();
-  if (document.body) startScrub();
-  else document.addEventListener('DOMContentLoaded', startScrub);
+  // DOM 级擦除已停用：它会和流式渲染互相触发，长文时把主线程打满。
+  // 真名擦除交给 sw.js 的流式替换（留 32 字尾巴那套）。
   setInterval(tick, 1000);
   document.addEventListener('DOMContentLoaded', tick);
   if (document.readyState !== 'loading') tick();

@@ -47,7 +47,7 @@
 
   try {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(function () {
+      navigator.serviceWorker.register('/sw.js?v=20261121e2', { scope: '/' }).then(function () {
         if (navigator.serviceWorker.controller) { startNow(); return; }
         navigator.serviceWorker.addEventListener('controllerchange', onControlled);
         setTimeout(function () {

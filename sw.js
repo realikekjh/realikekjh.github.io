@@ -647,15 +647,26 @@ async function* upstreamStream(apiUrl, apiKey, model, messages, tools, forceTool
   if (apiKey) headers.Authorization = 'Bearer ' + apiKey;
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), UPSTREAM_TIMEOUT);
-  let res;
-  try {
-    res = await fetch(apiUrl + '/chat/completions', {
-      method: 'POST', headers, body: JSON.stringify(payload),
-      signal: ac.signal, mode: 'cors', credentials: 'omit'
-    });
-  } catch (e) {
-    clearTimeout(timer);
-    throw new UpErr(0, (e && e.message) || String(e));
+  let res = null;
+  const waits = [0, 1200, 3000];
+  for (let attempt = 0; attempt < waits.length; attempt++) {
+    if (waits[attempt]) await new Promise((r) => setTimeout(r, waits[attempt]));
+    try {
+      res = await fetch(apiUrl + '/chat/completions', {
+        method: 'POST', headers, body: JSON.stringify(payload),
+        signal: ac.signal, mode: 'cors', credentials: 'omit'
+      });
+    } catch (e) {
+      if (attempt === waits.length - 1) {
+        clearTimeout(timer);
+        throw new UpErr(0, (e && e.message) || String(e));
+      }
+      continue;
+    }
+    if (res.ok) break;
+    // 429/500/502/503 大概率是限流或上游抖动，退避重试，别直接甩给用户
+    if ([429, 500, 502, 503, 504].indexOf(res.status) < 0 || attempt === waits.length - 1) break;
+    try { await res.text(); } catch (e) { /* 丢弃这次响应 */ }
   }
   clearTimeout(timer);
   if (!res.ok) {
@@ -762,7 +773,7 @@ async function chatRun(scene, req, body, emit) {
 
   const fullText = [];
   const thinkParts = [];
-  const st = { msgSet: false, hasThink: false, hasResp: false, searchFrags: [] };
+  const st = { msgSet: false, hasThink: false, hasResp: false, searchFrags: [], thinkStart: 0, thinkSecs: 0 };
   let saved = false;
 
   const savePartial = () => {
@@ -816,7 +827,7 @@ async function chatRun(scene, req, body, emit) {
 
   const setFragments = () => {
     const frags = [];
-    if (st.hasThink) frags.push({ id: 1, type: 'THINK', content: thinkParts.join('') });
+    if (st.hasThink) frags.push({ id: 1, type: 'THINK', content: thinkParts.join(''), elapsed_secs: st.thinkSecs || 0 });
     for (const f of st.searchFrags) {
       const copy = Object.assign({}, f);
       copy.id = frags.length + 1;
@@ -845,6 +856,7 @@ async function chatRun(scene, req, body, emit) {
   };
 
   const onThink = (piece) => {
+    if (!st.thinkStart) st.thinkStart = Date.now();
     if (!st.msgSet) setMsg(true);
     else if (!st.hasThink) {
       st.hasThink = true;
@@ -856,6 +868,9 @@ async function chatRun(scene, req, body, emit) {
   };
 
   const onContent = (piece) => {
+    if (st.thinkStart && !st.thinkSecs) {
+      st.thinkSecs = Math.max(1, Math.round((Date.now() - st.thinkStart) / 1000));
+    }
     if (!st.msgSet) setMsg(false);
     else if (!st.hasResp) { st.hasResp = true; setFragments(); }
     const idx = (st.hasThink ? 1 : 0) + st.searchFrags.length;
@@ -881,7 +896,7 @@ async function chatRun(scene, req, body, emit) {
   // 正文按字吐，快一些
   async function paceContent(text) {
     if (!text) return;
-    for (const p of sliceChunks(text, 2)) { onContent(p); await sleep(14); }
+    for (const p of sliceChunks(text, 3)) { onContent(p); await sleep(5); }
   }
   // 模型本身不给思考时，补一段假思考，慢慢拖出来
   async function fakeThinkStream(promptText) {
@@ -1031,6 +1046,8 @@ async function chatRun(scene, req, body, emit) {
             emitHint('连不上接口（' + (raw || '网络异常') + '），请检查网络或 URL 是否正确。');
           }
         }
+        emitDelta({ o: 'SET', p: 'response/status', v: 'FINISHED' });
+        emitDelta({ o: 'SET', p: 'response/quasi_status', v: 'FINISHED' });
         emitEnd();
         return;
       }
@@ -1420,14 +1437,19 @@ async function handleRequest(req) {
 }
 
 /* ------------------------------------------------------------------ 生命周期 */
-const SW_BUILD = 'v2044b';
-const SHELL_CACHE = 'ds-local-shell-v1';
+const SW_BUILD = 'v2044d';
+const SHELL_CACHE = 'ds-local-shell-v2';
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
     try {
       const c = await caches.open(SHELL_CACHE);
-      await c.addAll(['/', '/index.html']);
+      for (const u of ['/', '/index.html']) {
+        try {
+          const r = await fetch(u, { cache: 'reload' });
+          if (r && r.ok) await c.put(u, r.clone());
+        } catch (err) { /* 网络异常就跳过 */ }
+      }
     } catch (err) { /* 离线/异常就算了 */ }
     await self.skipWaiting();
   })());

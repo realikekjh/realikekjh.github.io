@@ -24,7 +24,7 @@
   /* ---------- 样式 ---------- */
   var CSS = `
   .ds-local-gear{display:none;position:fixed;left:220px;bottom:14px;width:28px;height:28px;z-index:99997;
-    display:flex;align-items:center;justify-content:center;border-radius:8px;cursor:pointer;
+    align-items:center;justify-content:center;border-radius:8px;cursor:pointer;
     color:var(--text-2,#61666b);transition:background .15s;}
   .ds-local-gear:hover{background:rgba(120,130,145,.15);color:var(--text,#1b1b1c);}
   .ds-local-mask{position:fixed;inset:0;background:rgba(0,0,0,.28);z-index:99998;display:flex;

@@ -96,6 +96,8 @@
             '<input id="ds-url" placeholder="https://api.example.com/v1" value="' + esc(cfg.url || '') + '"></div>' +
           '<div class="ds-local-field"><label>API Key（SK）</label>' +
             '<input id="ds-key" type="password" placeholder="sk-..." value="' + esc(cfg.key || '') + '"></div>' +
+          '<div class="ds-local-field"><label>模型名（列表拿不到时手填）</label>' +
+            '<input id="ds-model-manual" placeholder="例如 deepseek/deepseek-chat" value="' + esc(cfg.model || '') + '"></div>' +
           '<div class="ds-local-field ds-local-hide" id="ds-fetch-wrap">' +
             '<button class="ds-local-btn ds-local-pill" id="ds-fetch" disabled>获取当前可用模型</button>' +
             '<button class="ds-local-btn ds-local-pill" id="ds-diag" style="margin-left:8px">自检</button>' +
@@ -112,6 +114,7 @@
     var $ = function (id) { return mask.querySelector('#' + id); };
     var listEl = $('ds-list'), msgEl = $('ds-msg'), fetchWrap = $('ds-fetch-wrap'), urlEl = $('ds-url');
     function setMsg(t) { msgEl.textContent = t || ''; }
+    function syncManualModel(v) { var el = document.getElementById('ds-model-manual'); if (el && v) el.value = v; }
     var keyEl = $('ds-key'), fetchBtn = $('ds-fetch');
     function syncFetchState() {
       var url = (urlEl.value || '').trim();
@@ -207,11 +210,12 @@
       var url = (urlEl.value || '').trim().replace(/\/+$/, '');
       var key = ($('ds-key').value || '').trim();
       var picked = mask.querySelector('input[name="dsmodel"]:checked');
-      var model = picked ? picked.value : '';
+      var manual = (($('ds-model-manual') || {}).value || '').trim();
+      var model = (picked && picked.value) || manual;
       // 都不填 = 清空，回到内置模型（内置模型名不写进配置，界面永远不暴露）
       if (!url && !key) { cfgSet({ url: '', key: '', model: '' }); mask.remove(); return; }
       if (!url || !key) { setMsg('URL 和 Key 请一起填写'); return; }
-      if (!model) { setMsg('请先「获取模型列表」并选一个模型'); return; }
+      // 模型名空着也允许保存：聊天时 SW 会去拉一次 /models 自动挑第一个
       cfgSet({ url: url, key: key, model: model });
       mask.remove();
     });

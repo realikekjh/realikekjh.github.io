@@ -658,6 +658,38 @@ function sseResponse(run) {
   });
 }
 
+
+/* 面板只填了 URL+Key、没填模型名时：自动拉一次 /models 挑第一个可用模型。
+   这样"没点获取列表"也不会把内置模型名发给别人的接口（那会被判模型不存在）。 */
+const AUTO_MODEL_CACHE = {};
+async function autoPickModel(url, key) {
+  if (AUTO_MODEL_CACHE[url]) return AUTO_MODEL_CACHE[url];
+  try {
+    const ac = new AbortController();
+    const tm = setTimeout(() => ac.abort(), 12000);
+    let u = url, res = null, txt = '';
+    try {
+      res = await fetch(u + '/models', { headers: key ? { Authorization: 'Bearer ' + key } : {}, signal: ac.signal, mode: 'cors', credentials: 'omit' });
+      txt = await res.text();
+    } finally { clearTimeout(tm); }
+    if (!res.ok && !/\/v1$/.test(url)) {
+      const ac2 = new AbortController();
+      const tm2 = setTimeout(() => ac2.abort(), 12000);
+      try {
+        res = await fetch(url + '/v1/models', { headers: key ? { Authorization: 'Bearer ' + key } : {}, signal: ac2.signal, mode: 'cors', credentials: 'omit' });
+        txt = await res.text();
+      } finally { clearTimeout(tm2); }
+    }
+    if (!res.ok) return '';
+    const d = JSON.parse(txt);
+    const arr = d.data || d.models || [];
+    const first = arr[0];
+    const id = (first && (first.id || first.name)) || (typeof first === 'string' ? first : '');
+    if (id) AUTO_MODEL_CACHE[url] = id;
+    return id || '';
+  } catch (e) { return ''; }
+}
+
 /* ------------------------------------------------------------------ 上游流 */
 class UpErr extends Error {
   constructor(status, message) {
@@ -789,7 +821,8 @@ async function chatRun(scene, req, body, emit) {
     useSearch = !!body.search_enabled;
   }
   const cfg = resolveConfig(req.headers);
-  const apiUrl = normBase(cfg.url), apiKey = cfg.key, model = cfg.model;
+  const apiUrl = normBase(cfg.url), apiKey = cfg.key;
+  let model = cfg.model;
   // 搜索走同一个中转域名（worker 的 /search）；直连上游时为空，退回维基/DDG
   let searchBase = '';
   try {
@@ -1053,6 +1086,17 @@ async function chatRun(scene, req, body, emit) {
     history = historyForApi(sid);
   }
   if (!history.length) history = [{ role: 'user', content: prompt }];
+
+  // 自己填的接口但没模型名：自动挑一个，别拿内置模型名去撞人家的接口
+  if (cfg.src === 'panel' && !model) {
+    model = await autoPickModel(apiUrl, apiKey);
+    if (!model) {
+      emitHint('你填了接口但没给模型名，这个接口也没返回模型列表：'
+        + '请在设置→模型网关里手填「模型名」再发。');
+      emitEnd();
+      return;
+    }
+  }
 
   const workMessages = [
     { role: 'system', content: buildSystemPrompt(showThink, useSearch) }

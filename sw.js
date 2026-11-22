@@ -724,7 +724,7 @@ async function* upstreamStream(apiUrl, apiKey, model, messages, tools, forceTool
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), UPSTREAM_TIMEOUT);
   let res = null;
-  const waits = [0, 2000, 8000];
+  const waits = [0, 1000, 3000, 8000, 15000];
   for (let attempt = 0; attempt < waits.length; attempt++) {
     if (waits[attempt]) await new Promise((r) => setTimeout(r, waits[attempt]));
     try {
@@ -830,7 +830,8 @@ async function chatRun(scene, req, body, emit) {
     useSearch = !!body.search_enabled;
   }
   const cfg = resolveConfig(req.headers);
-  const apiUrl = normBase(cfg.url), apiKey = cfg.key;
+  let apiUrl = normBase(cfg.url);
+  let apiKey = cfg.key;
   let model = cfg.model;
   // 搜索走同一个中转域名（worker 的 /search）；直连上游时为空，退回维基/DDG
   let searchBase = '';
@@ -1137,6 +1138,7 @@ async function chatRun(scene, req, body, emit) {
   let searchedRounds = 0;
   let toolsFailed = false;
   let gwFallback = false;
+  let softFallback = false;
   let searchRefusalRetried = false;
   let forceTool = false;
 
@@ -1176,6 +1178,26 @@ async function chatRun(scene, req, body, emit) {
       flushThink();
       flushContent();
 
+      // 断网/超时/5xx/限流：不弹"网络错误"，先静默换通道再试
+      if (genErr && !softFallback) {
+        const isNetish = !genErr.status || genErr.status >= 500 || genErr.status === 429;
+        if (isNetish) {
+          softFallback = true;
+          const g2 = gatewayCfg();
+          if (cfg.src === 'panel' && g2 && g2.url) {
+            apiUrl = normBase(g2.url); model = (g2.model || model); apiKey = g2.key || apiKey;
+            genErr = null;
+            continue;
+          }
+          if (g2 && g2.url && !gwFallback) {
+            gwFallback = true;
+            apiUrl = normBase(g2.url); model = 'agnes-2.5-flash'; apiKey = g2.key || apiKey;
+            genErr = null;
+            continue;
+          }
+        }
+      }
+
       if (genErr && !gwFallback && cfg.src === 'gateway' && genErr.status >= 500 && model !== 'agnes-2.5-flash') {
         // 内置网关偶尔会出现"分组下无可用渠道"(503)：换一条通道自动重试一次
         gwFallback = true;
@@ -1207,9 +1229,16 @@ async function chatRun(scene, req, body, emit) {
           const raw = String(e.message || '');
           const isCors = /failed to fetch|networkerror|load failed|network request failed/i.test(raw);
           const isTimeout = /aborted|timeout|timed out/i.test(raw);
-          if (isTimeout) {
-            emitHint('等太久了（' + Math.round(UPSTREAM_TIMEOUT / 1000) + ' 秒没回应），已经断开。'
-              + '多半是思考链太长或上游卡住：把 DeepThink 关掉再发一次，或换个模型。');
+          if (isTimeout || isCors || !e.status || e.status >= 500 || e.status === 429) {
+            // 网络/限流/超时一律不弹错误：给一句软提示，状态照常收尾，确保"重试"可用
+            try {
+              await paceContent('（刚才这条通道没应答，已经自动重连了 ' + waits.length + ' 次。'
+                + '你直接再说一句，我接着往下。）');
+              flushContent();
+              savePartial();
+            } catch (e3) { /* ignore */ }
+            emitEnd();
+            return;
           } else if (isCors) {
             emitHint('连不上接口：浏览器跨域（CORS）被拦住了。纯静态站点只能直连接口，'
               + '如果接口没返回 Access-Control-Allow-Origin 就会被浏览器拒绝。'

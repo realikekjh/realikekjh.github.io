@@ -321,6 +321,149 @@
     } catch (e) {}
   }
 
+
+  /* ---------------- 导入聊天记录（.zip） ----------------
+     设置 → 数据管理 里挂一个按钮，选 DeepSeek 官网导出的压缩包，
+     解出 conversations/messages，POST /local/import，落 IndexedDB 后刷新。 */
+  function toSessions(data) {
+    var convs = data.conversations || data.chat_sessions || data.chats || data.data || data.list || data;
+    if (convs && !Array.isArray(convs) && typeof convs === 'object') {
+      if (Array.isArray(convs.conversations)) convs = convs.conversations;
+      else if (Array.isArray(convs.sessions)) convs = convs.sessions;
+    }
+    if (!Array.isArray(convs)) return [];
+    var out = [];
+    for (var i = 0; i < convs.length; i++) {
+      var c = convs[i] || {};
+      var msgs = c.messages || c.chat_messages || c.msgs || [];
+      if (!Array.isArray(msgs)) continue;
+      var title = String(c.title || c.name || c.topic || '').trim();
+      var rows = [];
+      for (var j = 0; j < msgs.length; j++) {
+        var m = msgs[j] || {};
+        var role = String(m.role || m.type || '').toLowerCase();
+        if (role === 'bot' || role === 'ai' || role === 'assistant') role = 'assistant';
+        else if (role === 'human' || role === 'user') role = 'user';
+        if (role !== 'user' && role !== 'assistant') continue;
+        var text = m.content;
+        if (Array.isArray(m.fragments)) {
+          text = m.fragments.map(function (f) { return (f && (f.content || f.text || f.value)) || ''; }).join('');
+        }
+        if (text == null) text = m.text || m.message || '';
+        text = String(text);
+        if (!text.trim()) continue;
+        rows.push({ role: role, content: text });
+      }
+      if (!rows.length) continue;
+      out.push({
+        title: title.slice(0, 40),
+        updated_at: Date.parse(c.updated_at || c.update_time || c.created_at || '') || Date.now(),
+        messages: rows
+      });
+    }
+    return out;
+  }
+
+  async function unzip(buffer) {
+    var u8 = new Uint8Array(buffer), files = [];
+    function rd16(o){ return u8[o] | (u8[o+1] << 8); }
+    function rd32(o){ return u8[o] | (u8[o+1] << 8) | (u8[o+2] << 16) | (u8[o+3] << 24); }
+    var eocd = -1;
+    for (var i = u8.length - 22; i >= 0 && i > u8.length - 70000; i--) {
+      if (rd32(i) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error('不是 ZIP 文件');
+    var count = rd16(eocd + 10), cdOff = rd32(eocd + 16);
+    for (var n = 0; n < count; n++) {
+      if (rd32(cdOff) !== 0x02014b50) break;
+      var method = rd16(cdOff + 10);
+      var nameLen = rd16(cdOff + 28), extraLen = rd16(cdOff + 30), cmtLen = rd16(cdOff + 32);
+      var lhOff = rd32(cdOff + 42);
+      var name = new TextDecoder('utf-8').decode(u8.subarray(cdOff + 46, cdOff + 46 + nameLen));
+      var sizeComp = rd32(cdOff + 20);
+      cdOff += 46 + nameLen + extraLen + cmtLen;
+      if (/\/$/.test(name)) continue;
+      if (!/\.json$/i.test(name)) continue;
+      var lName = rd16(lhOff + 26), lExtra = rd16(lhOff + 28);
+      var dataOff = lhOff + 30 + lName + lExtra;
+      var raw = u8.subarray(dataOff, dataOff + sizeComp);
+      var text = '';
+      if (method === 0) {
+        text = new TextDecoder('utf-8').decode(raw);
+      } else {
+        var ds = new DecompressionStream('deflate-raw');
+        var stream = new Blob([raw]).stream().pipeThrough(ds);
+        text = await new Response(stream).text();
+      }
+      files.push({ name: name, text: text });
+    }
+    return files;
+  }
+
+  function mountImportRow() {
+    if (document.getElementById('ds-imp-row')) return;
+    var all = document.querySelectorAll('div,section,li,button,a,span');
+    var anchor = null;
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el.childElementCount > 4) continue;
+      var t = (el.textContent || '').trim();
+      if (!/^(数据管理|Data (management|control)s?)$/i.test(t)) continue;
+      anchor = el; break;
+    }
+    if (!anchor) return;
+    var host = anchor.parentElement;
+    for (var k = 0; k < 3 && host && host.parentElement && host.getBoundingClientRect().width < 300; k++) host = host.parentElement;
+    if (!host) return;
+
+    var row = document.createElement('div');
+    row.id = 'ds-imp-row';
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 4px;border-top:1px solid rgba(128,128,128,.18);font-size:14px';
+    row.innerHTML = '<span style="opacity:.85">导入聊天记录（.zip）</span>' +
+      '<label style="cursor:pointer;padding:6px 12px;border-radius:9999px;background:#4D6BFE;color:#fff;font-size:13px">选择文件' +
+      '<input id="ds-imp-file" type="file" accept=".zip,application/zip" style="display:none"></label>';
+    host.appendChild(row);
+
+    row.querySelector('#ds-imp-file').addEventListener('change', async function (ev) {
+      var f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      var label = row.querySelector('span');
+      try {
+        label.textContent = '解析中…';
+        var entries = await unzip(await f.arrayBuffer());
+        var sessions = [];
+        for (var e = 0; e < entries.length; e++) {
+          try {
+            var js = JSON.parse(entries[e].text);
+            var got = toSessions(js);
+            if (got.length) sessions = sessions.concat(got);
+          } catch (err) {}
+        }
+        if (!sessions.length) {
+          label.textContent = '没找到可导入的对话';
+          return;
+        }
+        label.textContent = '写入中（' + sessions.length + ' 个对话）…';
+        var res = await fetch('/local/import', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessions: sessions })
+        });
+        var j = await res.json().catch(function () { return {}; });
+        var d = (j && (j.data || j.biz_data)) || {};
+        label.textContent = '已导入 ' + (d.imported || sessions.length) + ' 个对话，刷新中…';
+        setTimeout(function () { location.reload(); }, 900);
+      } catch (err) {
+        row.querySelector('span').textContent = '导入失败：' + (err && err.message ? err.message : '未知错误');
+      }
+    });
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    var txt = (t && (t.innerText || t.textContent) || '').trim();
+    if (/数据管理|Data (management|control)s?/i.test(txt)) setTimeout(mountImportRow, 500);
+  }, true);
+
   var nameHookDone = false;
   function tick() {
     mountGear(); patchMenu();
@@ -333,5 +476,14 @@
   document.addEventListener('DOMContentLoaded', tick);
   if (document.readyState !== 'loading') tick();
 
-  window.__dsLocal = { open: openPanel, getCfg: cfgGet, setCfg: cfgSet, gear: function () { return gearBtn; } };
+  window.__dsLocal = { open: openPanel, getCfg: cfgGet, setCfg: cfgSet, gear: function () { return gearBtn; },
+    importZip: async function (buf) {
+      var entries = await unzip(buf), sessions = [];
+      for (var e = 0; e < entries.length; e++) {
+        try { var got = toSessions(JSON.parse(entries[e].text)); if (got.length) sessions = sessions.concat(got); } catch (err) {}
+      }
+      if (!sessions.length) return { imported: 0 };
+      var r = await fetch('/local/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessions: sessions }) });
+      return r.json();
+    } };
 })();

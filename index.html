@@ -83,7 +83,7 @@
 
   try {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js?v=20261122z2', { scope: '/', updateViaCache: 'none' }).then(function (reg) {
+      navigator.serviceWorker.register('/sw.js?v=20261123a', { scope: '/', updateViaCache: 'none' }).then(function (reg) {
         // 每次打开都主动查一次新版本，别让用户卡在旧逻辑上
         try { reg.update(); } catch (e) {}
         if (reg.waiting) { try { reg.waiting.postMessage('skip'); } catch (e) {} }

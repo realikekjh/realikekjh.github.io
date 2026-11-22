@@ -667,7 +667,9 @@ class UpErr extends Error {
   }
 }
 
+let LAST_UP = null;
 async function* upstreamStream(apiUrl, apiKey, model, messages, tools, forceTool, reasoning) {
+  LAST_UP = { url: apiUrl, model: model, t: Date.now(), status: 0, err: '', bytes: 0 };
   const payload = { model, messages, stream: true, max_tokens: MAX_TOKENS };
   // 内置上游默认不吐思考，必须显式要；自定义接口不乱塞参数（有的会 400），
   // 它们自己有思考就直接走 reasoning_content。
@@ -692,6 +694,7 @@ async function* upstreamStream(apiUrl, apiKey, model, messages, tools, forceTool
     } catch (e) {
       if (attempt === waits.length - 1) {
         clearTimeout(timer);
+        LAST_UP.err = 'fetch-throw: ' + ((e && e.message) || String(e));
         throw new UpErr(0, (e && e.message) || String(e));
       }
       continue;
@@ -702,10 +705,12 @@ async function* upstreamStream(apiUrl, apiKey, model, messages, tools, forceTool
     try { await res.text(); } catch (e) { /* 丢弃这次响应 */ }
   }
   clearTimeout(timer);
+  LAST_UP.status = res.status;
   if (!res.ok) {
     let detail = '';
     try { detail = (await res.text()).slice(0, 300); } catch (e) { /* ignore */ }
     const m = /"message"\s*:\s*"([^"]{0,120})/.exec(detail);
+    LAST_UP.err = (m ? m[1] : detail).slice(0, 160);
     throw new UpErr(res.status, m ? m[1] : detail.slice(0, 120));
   }
   const ctype = (res.headers.get('content-type') || '').toLowerCase();
@@ -727,6 +732,7 @@ async function* upstreamStream(apiUrl, apiKey, model, messages, tools, forceTool
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+    LAST_UP.bytes += (value && value.length) || 0;
     buf += dec.decode(value, { stream: true });
     const lines = buf.split('\n');
     buf = lines.pop();
@@ -740,6 +746,8 @@ async function* upstreamStream(apiUrl, apiKey, model, messages, tools, forceTool
       const ch = chunk && chunk.choices && chunk.choices[0];
       if (!ch) continue;
       const d = ch.delta || {};
+      LAST_UP.yielded = (LAST_UP.yielded || 0) + (d.content ? d.content.length : 0);
+      LAST_UP.chunks = (LAST_UP.chunks || 0) + 1;
       yield {
         content: d.content || '',
         reasoning: d.reasoning_content || d.reasoning || '',
@@ -1109,6 +1117,10 @@ async function chatRun(scene, req, body, emit) {
       } catch (e) {
         genErr = e;
       }
+      // 关键：擦除留了 40 字尾巴缓冲，流结束必须刷出去。
+      // 以前这里漏了，短回复（<40 字）会整段卡在缓冲里 → 被判"没返回正文"。
+      flushThink();
+      flushContent();
 
       if (genErr) {
         const e = genErr;
@@ -1554,6 +1566,12 @@ async function handleRequest(req) {
       return jsonResponse(okBiz({ name: STATE.profile.name, mobile: STATE.profile.mobile }));
     }
 
+    if (path === '/local/__echo') {
+      const cfg = resolveConfig(req.headers);
+      return jsonResponse({ url: cfg.url, model: cfg.model, src: cfg.src, last: LAST_UP,
+        hasKey: !!cfg.key, keyLen: (cfg.key || '').length,
+        headerUrl: req.headers.get('x-local-api-url') || '' });
+    }
     if (path === '/local/__diag') {
       const cfg = resolveConfig(req.headers);
       const url = normBase(body.url || '') || cfg.url;

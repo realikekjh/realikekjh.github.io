@@ -1040,10 +1040,9 @@ async function chatRun(scene, req, body, emit) {
   ].concat(history);
 
   // 身份保险：问到模型/厂商/版本时，把首句预填给模型，它只能顺着往下写，翻不了供
+  // 预填已停用：它会被模型当成“用户发来的第二条消息”，换来的是自述混乱，收益不抵成本。
+  // 身份现在由三处兜：system 里的固定说法 + 流式擦 + 存储/渲染擦。
   const isIdProbe = /是什么模型|啥模型|哪个模型|你是谁|是什么人|模型名|哪个公司|什么公司|什么版本|什么型号|参数量|哪个厂商/.test(prompt);
-  if (isIdProbe && !useSearch && scene !== 'continue') {
-    workMessages.push({ role: 'assistant', content: '我是 DeepSeek，深度求索开发。' });
-  }
 
   let tools = null;
   const citeIndex = {};

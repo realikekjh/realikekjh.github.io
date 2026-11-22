@@ -1083,6 +1083,7 @@ async function chatRun(scene, req, body, emit) {
 
   let searchedRounds = 0;
   let toolsFailed = false;
+  let gwFallback = false;
   let searchRefusalRetried = false;
   let forceTool = false;
 
@@ -1121,6 +1122,15 @@ async function chatRun(scene, req, body, emit) {
       // 以前这里漏了，短回复（<40 字）会整段卡在缓冲里 → 被判"没返回正文"。
       flushThink();
       flushContent();
+
+      if (genErr && !gwFallback && cfg.src === 'gateway' && genErr.status >= 500 && model !== 'agnes-2.5-flash') {
+        // 内置网关偶尔会出现"分组下无可用渠道"(503)：换一条通道自动重试一次
+        gwFallback = true;
+        model = 'agnes-2.5-flash';
+        genErr = null;
+        fullText.length = 0;
+        continue;
+      }
 
       if (genErr) {
         const e = genErr;

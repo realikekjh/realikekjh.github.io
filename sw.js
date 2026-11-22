@@ -237,6 +237,8 @@ function scrubName(t) {
   r = r.replace(/深度求索\s*[（(][^）)]{0,16}[）)]/g, '深度求索');
   r = r.replace(/深度求索\s*AI/g, '深度求索');
   r = r.replace(/DeepSeek\s*AI/g, 'DeepSeek');
+  r = r.replace(/深度求索\s*[，,、]?\s*DeepSeek/gi, '深度求索');
+  r = r.replace(/DeepSeek\s*[，,、]?\s*深度求索/g, function(m){ return m.indexOf('，深度求索')>=0 ? m : 'DeepSeek'; });
   return r;
 }
 
@@ -644,7 +646,14 @@ function sseResponse(run) {
       const emit = (s) => {
         try { controller.enqueue(enc.encode(s)); } catch (e) { /* 客户端已断 */ }
       };
+      let alive = true;
+      const beat = setInterval(() => {
+        if (!alive) return;
+        try { controller.enqueue(enc.encode(': keep\n\n')); } catch (e) { /* 断了 */ }
+      }, 10000);
+      emit(': ready\n\n');
       run(emit).catch(() => {}).then(() => {
+        alive = false; clearInterval(beat);
         try { controller.close(); } catch (e) { /* ignore */ }
       });
     }
@@ -994,34 +1003,34 @@ async function chatRun(scene, req, body, emit) {
     if (!text) return;
     if (!st.hasThink && st.msgSet) setFragments();
     thinkPend += text;
-    while (thinkPend.length > 40) {
-      const cut = safeCut(thinkPend, thinkPend.length - 40);
+    while (thinkPend.length > 24) {
+      const cut = safeCut(thinkPend, thinkPend.length - 24);
       const take = thinkPend.slice(0, cut);
       thinkPend = thinkPend.slice(cut);
-      for (const p of sliceChunks(scrub(take), 3)) { onThink(p); await sleep(26); }
+      for (const p of sliceChunks(scrub(take), 8)) { onThink(p); await sleep(7); }
     }
   }
   function flushThink() {
     if (!thinkPend) return;
     const rest = thinkPend; thinkPend = '';
-    for (const p of sliceChunks(scrub(rest), 3)) onThink(p);
+    for (const p of sliceChunks(scrub(rest), 8)) onThink(p);
   }
   // 正文按字吐，同样擦真名
   let pend = '';
   async function paceContent(text) {
     if (!text) return;
     pend += text;
-    while (pend.length > 40) {
-      const cut = safeCut(pend, pend.length - 40);
+    while (pend.length > 24) {
+      const cut = safeCut(pend, pend.length - 24);
       const take = pend.slice(0, cut);
       pend = pend.slice(cut);
-      for (const p of sliceChunks(scrub(take), 3)) { onContent(p); await sleep(5); }
+      for (const p of sliceChunks(scrub(take), 6)) { onContent(p); await sleep(2); }
     }
   }
   function flushContent() {
     if (!pend) return;
     const rest = pend; pend = '';
-    for (const p of sliceChunks(scrub(rest), 3)) onContent(p);
+    for (const p of sliceChunks(scrub(rest), 6)) onContent(p);
   }
   // 模型本身不给思考时，补一段假思考，慢慢拖出来
   async function fakeThinkStream(promptText) {
@@ -1388,7 +1397,18 @@ async function handleRequest(req) {
     let body = {};
     try { body = await req.json(); } catch (e) { body = {}; }
     const scene = path.split('/').pop();
-    return sseResponse((emit) => chatRun(scene, req, body, emit));
+    return sseResponse((emit) => {
+      return chatRun(scene, req, body, emit).catch((e) => {
+        try {
+          emit('event: hint\ndata: ' + JSON.stringify({
+            content: '后台处理出错：' + ((e && e.message) || String(e)) + '（这次不是网络问题，重试一次即可）',
+            type: 'error', clear_response: true, finish_reason: null
+          }) + '\n\n');
+          emit('event: finish\ndata: {}\n\n');
+          emit('event: close\ndata: {"click_behavior":"none"}\n\n');
+        } catch (e2) { /* ignore */ }
+      });
+    });
   }
 
   // ---- 全文搜索（SSE） ----

@@ -100,6 +100,17 @@ function gatewayCfg() {
   return cfg;
 }
 
+
+// 用户经常把整条 endpoint 粘进来，或者带尾斜杠、带 query。统一收成 base。
+function normBase(u) {
+  let x = String(u || '').trim();
+  if (!x) return '';
+  x = x.replace(/[?#].*$/, '').replace(/\/+$/, '');
+  // 常见误粘：/chat/completions、/completions、/models、/responses
+  x = x.replace(/\/(chat\/completions|completions|models|responses)$/i, '');
+  return x;
+}
+
 function resolveConfig(headers) {
   const gw = gatewayCfg();
   const pick = (v, k) => {
@@ -108,7 +119,7 @@ function resolveConfig(headers) {
     return (gw[k] || '').trim();
   };
   const panelUrl = headers.get('x-local-api-url') || '';
-  const url = pick(panelUrl, 'url').replace(/\/+$/, '');
+  const url = normBase(pick(panelUrl, 'url'));
   const key = pick(headers.get('x-local-api-key'), 'key');
   const model = pick(headers.get('x-local-model'), 'model');
   return { url, key, model, src: panelUrl.trim() ? 'panel' : 'gateway' };
@@ -770,7 +781,7 @@ async function chatRun(scene, req, body, emit) {
     useSearch = !!body.search_enabled;
   }
   const cfg = resolveConfig(req.headers);
-  const apiUrl = cfg.url, apiKey = cfg.key, model = cfg.model;
+  const apiUrl = normBase(cfg.url), apiKey = cfg.key, model = cfg.model;
   // 搜索走同一个中转域名（worker 的 /search）；直连上游时为空，退回维基/DDG
   let searchBase = '';
   try {
@@ -1120,7 +1131,11 @@ async function chatRun(scene, req, body, emit) {
         } else {
           const raw = String(e.message || '');
           const isCors = /failed to fetch|networkerror|load failed|network request failed/i.test(raw);
-          if (isCors) {
+          const isTimeout = /aborted|timeout|timed out/i.test(raw);
+          if (isTimeout) {
+            emitHint('等太久了（' + Math.round(UPSTREAM_TIMEOUT / 1000) + ' 秒没回应），已经断开。'
+              + '多半是思考链太长或上游卡住：把 DeepThink 关掉再发一次，或换个模型。');
+          } else if (isCors) {
             emitHint('连不上接口：浏览器跨域（CORS）被拦住了。纯静态站点只能直连接口，'
               + '如果接口没返回 Access-Control-Allow-Origin 就会被浏览器拒绝。'
               + '解决办法：点左下角齿轮，填一个允许跨域的 OpenAI 兼容接口；'
@@ -1538,19 +1553,130 @@ async function handleRequest(req) {
       await saveState();
       return jsonResponse(okBiz({ name: STATE.profile.name, mobile: STATE.profile.mobile }));
     }
+
+    if (path === '/local/__diag') {
+      const cfg = resolveConfig(req.headers);
+      const url = normBase(body.url || '') || cfg.url;
+      const key = (body.key || '').trim() || cfg.key;
+      const model = (body.model || '').trim() || cfg.model;
+      const steps = [];
+      const timed = async (fn, ms) => {
+        const t0 = Date.now();
+        const ac = new AbortController();
+        const tm = setTimeout(() => ac.abort(), ms || 20000);
+        try { return { r: await fn(ac.signal), ms: Date.now() - t0 }; }
+        finally { clearTimeout(tm); }
+      };
+      const pickModel = (txt) => {
+        try {
+          const d = JSON.parse(txt);
+          const arr = d.data || d.models || [];
+          const first = arr[0];
+          return (first && (first.id || first.name)) || (typeof first === 'string' ? first : '') || '';
+        } catch (e) { return ''; }
+      };
+      let listModel = '', listStatus = 0, base = url;
+      try {
+        const g = await timed((sig) => fetch(url + '/models', {
+          headers: key ? { Authorization: 'Bearer ' + key, 'Accept': 'application/json' } : { 'Accept': 'application/json' },
+          mode: 'cors', credentials: 'omit', signal: sig
+        }));
+        const txt = await g.r.text();
+        listStatus = g.r.status;
+        listModel = pickModel(txt);
+        if (!g.r.ok && !/\/v1$/.test(url)) {
+          // URL 少写 /v1：补一次，成功就换 base
+          try {
+            const g2 = await timed((sig) => fetch(url + '/v1/models', { headers: key ? { Authorization: 'Bearer ' + key } : {}, mode: 'cors', credentials: 'omit', signal: sig }));
+            const t2 = await g2.r.text();
+            if (g2.r.ok) { base = url + '/v1'; steps.push({ step: '①补 发现少了 /v1，改用 ' + base, ok: true, status: g2.r.status, ms: g2.ms, note: '自动纠正成功' }); listModel = pickModel(t2); listStatus = g2.r.status; }
+          } catch (e) { /* 保留第一次结果 */ }
+        }
+        steps.push({ step: '① 列模型 GET ' + url + '/models', ok: g.r.ok, status: g.r.status, ms: g.ms,
+          note: g.r.ok ? ('拿到 ' + (listModel || '列表') + '，可当茶测试模型') : String(txt).slice(0, 160) });
+      } catch (e) {
+        let fixed = false;
+        if (!/\/v1$/.test(url)) {
+          try {
+            const g2 = await timed((sig) => fetch(url + '/v1/models', { headers: key ? { Authorization: 'Bearer ' + key } : {}, mode: 'cors', credentials: 'omit', signal: sig }));
+            const t2 = await g2.r.text();
+            if (g2.r.ok) {
+              base = url + '/v1'; listModel = pickModel(t2); listStatus = g2.r.status; fixed = true;
+              steps.push({ step: '① 补 /v1 后成功：' + base + '/models', ok: true, status: g2.r.status, ms: g2.ms, note: '原地址少了 /v1，已自动纠正' });
+            }
+          } catch (e3) { /* ignore */ }
+        }
+        if (!fixed) steps.push({ step: '① 列模型 GET ' + url + '/models', ok: false, status: 0, ms: 0,
+          note: '连不上：' + ((e && e.message) || '') + '（多半是没开跨域 CORS）' });
+      }
+      const testModel = model || listModel;
+      if (testModel) {
+        try {
+          const g = await timed((sig) => fetch(base + '/chat/completions', {
+            method: 'POST', mode: 'cors', credentials: 'omit', signal: sig,
+            headers: Object.assign({ 'Content-Type': 'application/json' }, key ? { Authorization: 'Bearer ' + key } : {}),
+            body: JSON.stringify({ model: testModel, stream: false, max_tokens: 16,
+              messages: [{ role: 'user', content: '只回复两个字：在的' }] })
+          }));
+          const txt = await g.r.text();
+          const okChat = g.r.ok && /choices/.test(txt);
+          steps.push({ step: '② 真发一句话 POST ' + url + '/chat/completions（模型：' + testModel + '）',
+            ok: okChat, status: g.r.status, ms: g.ms,
+            note: okChat ? '通了，这个配置能用' : String(txt).slice(0, 200) });
+        } catch (e) {
+          const raw = (e && e.message) || '';
+          steps.push({ step: '② 真发一句话（模型：' + testModel + '）', ok: false, status: 0, ms: 0,
+            note: /aborted/i.test(raw) ? '超时了（20 秒没回）' : '连不上：' + raw + '（跨域被拦或网络不通）' });
+        }
+      } else {
+        steps.push({ step: '② 真发一句话', ok: false, status: 0, ms: 0, note: '没有可用模型名，跳过' });
+      }
+      const okAll = steps.every((x) => x.ok);
+      return jsonResponse({ ok: okAll, url: base, model: testModel || '', steps: steps });
+    }
     if (path === '/local/models') {
       const cfg = resolveConfig(req.headers);
-      const url = (body.url || '').trim().replace(/\/+$/, '') || cfg.url;
+      const url = normBase(body.url || '') || cfg.url;
       const key = (body.key || '').trim() || cfg.key;
       if (!url) return jsonResponse({ error: 'empty url' }, 400);
+      const getModels = async (u) => {
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), 15000);
+        try {
+          const res = await fetch(u + '/models', {
+            headers: key ? { Authorization: 'Bearer ' + key, 'Accept': 'application/json' } : { 'Accept': 'application/json' },
+            mode: 'cors', credentials: 'omit', signal: ac.signal
+          });
+          const text = await res.text();
+          return { res, text };
+        } finally { clearTimeout(t); }
+      };
       try {
-        const res = await fetch(url + '/models', {
-          headers: key ? { Authorization: 'Bearer ' + key } : {}, mode: 'cors', credentials: 'omit'
-        });
-        const text = await res.text();
-        return new Response(text, { status: res.status, headers: { 'Content-Type': 'application/json' } });
+        let r = null;
+        try { r = await getModels(url); } catch (e0) {
+          if (!/\/v1$/.test(url)) r = await getModels(url + '/v1');   // 少写 /v1 时补一次再试
+          else throw e0;
+        }
+        // URL 少写 /v1 时，404 也补一次
+        if (!r.res.ok && r.res.status === 404 && !/\/v1$/.test(url)) {
+          try { const r2 = await getModels(url + '/v1'); if (r2.res.ok) r = r2; } catch (e) { /* 保留第一次结果 */ }
+        }
+        if (!r.res.ok) {
+          const why = r.res.status === 401 || r.res.status === 403
+            ? '这个 Key 读不到模型列表（多半是 Key 不对或没权限）'
+            : r.res.status === 404
+              ? '地址找不到 /models：URL 一般要以 /v1 结尾'
+              : '上游返回 HTTP ' + r.res.status;
+          return jsonResponse({ error: why + '｜上游原话：' + String(r.text || '').slice(0, 160) }, r.res.status);
+        }
+        return new Response(r.text, { status: 200, headers: { 'Content-Type': 'application/json' } });
       } catch (e) {
-        return jsonResponse({ error: '获取失败：跨域被拦截或网络不通（' + ((e && e.message) || '') + '）' }, 502);
+        const raw = (e && e.message) || String(e);
+        const why = /aborted|abort/i.test(raw)
+          ? '请求超时了（15 秒没回应）'
+          : '跨域被拦或网络不通：这个地址没有返回 Access-Control-Allow-Origin，浏览器直连不了'
+            + '（纯静态站只能直连允许跨域的接口；否则要套一层中转）';
+        return jsonResponse({ error: '获取失败：' + why + '｜技术原因：' + raw }, 502);
       }
     }
     if (path === '/api/v0/share/create' || path === '/api/v0/share/content'

@@ -98,8 +98,9 @@
             '<input id="ds-key" type="password" placeholder="sk-..." value="' + esc(cfg.key || '') + '"></div>' +
           '<div class="ds-local-field ds-local-hide" id="ds-fetch-wrap">' +
             '<button class="ds-local-btn ds-local-pill" id="ds-fetch" disabled>获取当前可用模型</button>' +
+            '<button class="ds-local-btn ds-local-pill" id="ds-diag" style="margin-left:8px">自检</button>' +
           '</div>' +
-          '<div class="ds-local-tip" id="ds-msg"></div>' +
+          '<div class="ds-local-tip" id="ds-msg" style="white-space:pre-wrap;word-break:break-word"></div>' +
           '<div class="ds-local-model-list ds-local-hide" id="ds-list"></div>' +
         '</div>' +
         '<div class="ds-local-panel__ft">' +
@@ -163,7 +164,13 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: url, key: key })
       })
-        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (r) {
+          return r.json().catch(function () { return {}; }).then(function (d) {
+            if (!r.ok) throw new Error((d && d.error) || ('HTTP ' + r.status));
+            if (d && d.error) throw new Error(d.error);
+            return d;
+          });
+        })
         .then(function (d) {
           var arr = d.data || d.models || (Array.isArray(d) ? d : []);
           var names = arr.map(function (m) { return m.id || m.name || (typeof m === 'string' ? m : ''); }).filter(Boolean);
@@ -171,6 +178,29 @@
         })
         .catch(function (err) { setMsg('获取失败：' + err.message); })
         .then(function () { btn.disabled = false; btn.textContent = '获取当前可用模型'; });
+    });
+
+    var diagBtn = $('ds-diag');
+    if (diagBtn) diagBtn.addEventListener('click', function () {
+      var url = (urlEl.value || '').trim().replace(/\/+$/, '');
+      var key = ($('ds-key').value || '').trim();
+      var picked = mask.querySelector('input[name="dsmodel"]:checked');
+      if (!url) { setMsg('先填 URL'); return; }
+      diagBtn.disabled = true; diagBtn.textContent = '自检中…';
+      setMsg('正在自检（最多 40 秒）…');
+      fetch('/local/__diag', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url, key: key, model: picked ? picked.value : '' })
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          var lines = ((d && d.steps) || []).map(function (x) {
+            return (x.ok ? '✅ ' : '❌ ') + x.step + '  → ' + (x.status || '-') + ' / ' + (x.ms ? x.ms + 'ms' : '-') + '\n   ' + (x.note || '');
+          });
+          setMsg((d && d.ok ? '全部通过，这个配置能用。\n\n' : '有问题，看下面第二行。\n\n') + lines.join('\n\n'));
+        })
+        .catch(function (e) { setMsg('自检请求本身失败：' + (e && e.message)); })
+        .then(function () { diagBtn.disabled = false; diagBtn.textContent = '自检'; });
     });
 
     $('ds-save').addEventListener('click', function () {
